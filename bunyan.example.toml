@@ -1,0 +1,41 @@
+# Copy to bunyan.toml and adjust. bunyan.toml is git-ignored.
+# Copy dataaccess.example.json to dataaccess.json and set your connection string.
+# dataaccess.json supplies server settings; CLI uses its credentials.
+# Web SQL authentication comes from the login page and optional OS-keychain storage.
+
+[sqlserver]
+dataaccess_file = "dataaccess.json" # relative to this TOML file
+# Used when dataaccess.json is absent (password_env is for CLI / login-disabled service mode):
+host = "sqlserver.example.local"
+port = 1433
+database = "CATSDEV"
+user = "bunyan_reader"
+password_env = "BUNYAN_SQL_PASSWORD"
+table = "CORE.Log"       # initial default; web Settings can save a different table/column mapping
+encrypt = "required"     # required | off | not_supported
+trust_cert = true        # accept self-signed certs on internal servers
+
+[sqlite]
+path = "bunyan.db"
+
+[schedule]
+enabled = true
+daily_at = "06:45"       # local time; imports yesterday
+max_catchup_days = 7     # missed days to back-fill after downtime
+auto_suggest_top = 5     # LLM suggestions after each run (0 = off)
+
+[ollama]
+url = "http://localhost:11434"
+model = "qwen2.5-coder:latest"
+timeout_secs = 300
+
+[source]
+# Optional read-only checkout of the main app; adds code context to suggestions.
+# root = "/path/to/main-app"
+extensions = ["cs", "vb", "sql"]
+context_lines = 40
+
+[web]
+bind = "127.0.0.1:8080"
+require_login = true     # SQL login first; false only for intentional local demo/service mode
+open_browser = true      # OS default external browser; set false for headless services

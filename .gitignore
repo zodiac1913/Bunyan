@@ -1,0 +1,6 @@
+/target
+bunyan.toml
+dataaccess.json
+*.db
+*.db-wal
+*.db-shm

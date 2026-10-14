@@ -1,0 +1,47 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Bunyan: Web + daily scheduler",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": ["build", "--bin", "bunyan"],
+                "filter": {
+                    "name": "bunyan",
+                    "kind": "bin"
+                }
+            },
+            "args": ["serve"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Bunyan: Check SQL access",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": ["build", "--bin", "bunyan"],
+                "filter": {
+                    "name": "bunyan",
+                    "kind": "bin"
+                }
+            },
+            "args": ["check"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Bunyan: Import missed days",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": ["build", "--bin", "bunyan"],
+                "filter": {
+                    "name": "bunyan",
+                    "kind": "bin"
+                }
+            },
+            "args": ["import"],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
