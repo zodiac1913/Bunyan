@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS login_preferences (
     username         TEXT NOT NULL,
     saved_password   INTEGER NOT NULL DEFAULT 0 CHECK(saved_password IN (0, 1))
 );
+CREATE TABLE IF NOT EXISTS sql_connection (
+    id     INTEGER PRIMARY KEY CHECK(id = 1),
+    target TEXT NOT NULL
+);
 "#;
 
 /// Lower-cased `LogType` values treated as non-problems; everything else counts as an "issue".
@@ -426,7 +430,7 @@ pub struct GroupRow {
     pub class_name: Option<String>,
     pub method_name: Option<String>,
     pub exception_type: Option<String>,
-    pub template: String,
+    pub sample_message: String,
     pub first_seen: String,
     pub last_seen: String,
     pub has_suggestion: bool,
@@ -447,8 +451,8 @@ pub fn top_groups(
     p.push(limit.to_string());
     let level = level_sql("g.log_type", "g.sample_message");
     let sql = format!(
-        "SELECT g.id, g.log_app, {level}, g.class_name, g.method_name, g.exception_type, g.template,
-                g.first_seen, g.last_seen, g.suggestion IS NOT NULL, COUNT(*), MAX(e.log_severity)
+        "SELECT g.id, g.log_app, {level}, g.class_name, g.method_name, g.exception_type, g.sample_message,
+                g.first_seen, g.last_seen, g.suggestion, COUNT(*), MAX(e.log_severity)
          FROM log_entries e JOIN error_groups g ON g.id = e.group_id
          WHERE e.day >= ?1 AND e.day < ?2 {filter}
          GROUP BY g.id ORDER BY COUNT(*) DESC LIMIT ?{}",
@@ -463,10 +467,12 @@ pub fn top_groups(
             class_name: r.get(3)?,
             method_name: r.get(4)?,
             exception_type: r.get(5)?,
-            template: r.get(6)?,
+            sample_message: r.get(6)?,
             first_seen: r.get(7)?,
             last_seen: r.get(8)?,
-            has_suggestion: r.get(9)?,
+            has_suggestion: r
+                .get::<_, Option<String>>(9)?
+                .is_some_and(|text| !suggestion_is_outdated(&text)),
             count: r.get(10)?,
             max_severity: r.get(11)?,
         })
@@ -661,7 +667,17 @@ pub fn group_entries(conn: &Connection, id: i64, limit: i64) -> Result<Vec<Entry
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// Uses the same token definitions as grouping-pattern display; original log text is never rewritten.
+pub fn suggestion_is_outdated(text: &str) -> bool {
+    normalize::display_template(text) != text
+}
+
+/// Rejects placeholder-based advice before writing, preserving any previously saved suggestion.
 pub fn save_suggestion(conn: &Connection, id: i64, text: &str, model: &str) -> Result<()> {
+    anyhow::ensure!(
+        !suggestion_is_outdated(text),
+        "AI suggestion contains internal grouping placeholders instead of original log values. Generate a new suggestion from the original error."
+    );
     conn.execute(
         "UPDATE error_groups SET suggestion = ?2, suggestion_model = ?3, suggestion_at = ?4 WHERE id = ?1",
         params![id, text, model, now()],
@@ -669,7 +685,7 @@ pub fn save_suggestion(conn: &Connection, id: i64, text: &str, model: &str) -> R
     Ok(())
 }
 
-/// Top non-informational groups seen in `[start, end)` that still lack a suggestion.
+/// Top non-informational groups seen in `[start, end)` that lack a current suggestion.
 pub fn groups_needing_suggestion(
     conn: &Connection,
     start: NaiveDate,
@@ -713,6 +729,58 @@ mod tests {
             add_user_name: None,
             add_timestamp: NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S").unwrap(),
         }
+    }
+
+    #[test]
+    fn outdated_suggestions_are_eligible_for_regeneration_and_rejected_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("suggestions.db");
+        let mut c = open(&path).unwrap();
+        let original = "Incorrect syntax near the keyword 'RowCount'.";
+        ingest(&mut c, &[row(1, original, "2026-10-13 08:00:00")]).unwrap();
+        let start = "2026-10-13".parse().unwrap();
+        let end = "2026-10-14".parse().unwrap();
+        let filter = Filter {
+            app: None,
+            level: "issues".into(),
+        };
+        let id = top_groups(&c, start, end, &filter, 10).unwrap()[0].id;
+        // Simulate legacy advice, which predates the save-time validation.
+        c.execute(
+            "UPDATE error_groups SET suggestion = ?1 WHERE id = ?2",
+            params!["Check the SQL keyword '<str>'.", id],
+        )
+        .unwrap();
+        drop(c);
+        let c = open(&path).unwrap();
+        let group = group_detail(&c, id).unwrap().unwrap();
+        assert!(suggestion_is_outdated(group.suggestion.as_deref().unwrap()));
+        assert_eq!(group.sample_message, original);
+        assert_eq!(group.template, normalize::template(original));
+        assert!(!top_groups(&c, start, end, &filter, 10).unwrap()[0].has_suggestion);
+        assert_eq!(
+            groups_needing_suggestion(&c, start, end, 10).unwrap(),
+            vec![id]
+        );
+
+        let valid = "Quote the RowCount alias with square brackets, then rerun the query.";
+        save_suggestion(&c, id, valid, "local").unwrap();
+        assert!(top_groups(&c, start, end, &filter, 10).unwrap()[0].has_suggestion);
+        assert!(
+            groups_needing_suggestion(&c, start, end, 10)
+                .unwrap()
+                .is_empty()
+        );
+        for token in [
+            "<str>", "<guid>", "<ts>", "<date>", "<email>", "<hex>", "<n>",
+        ] {
+            let error = save_suggestion(&c, id, &format!("Inspect {token}."), "local").unwrap_err();
+            assert!(error.to_string().contains("internal grouping placeholders"));
+        }
+        let group = group_detail(&c, id).unwrap().unwrap();
+        assert_eq!(group.suggestion.as_deref(), Some(valid));
+        assert_eq!(group.suggestion_model.as_deref(), Some("local"));
+        assert_eq!(group.sample_message, original);
     }
 
     #[test]

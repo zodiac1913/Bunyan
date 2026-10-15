@@ -13,7 +13,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 type SqlClient = Client<Compat<TcpStream>>;
 
-pub const PASSWORD_CHANGE_MESSAGE: &str = "SQL Server requires a password change. Use SSMS or your administrator's approved SQL tool to change it, then sign in here with the new password. In-app password reset is not supported yet.";
+pub const PASSWORD_CHANGE_MESSAGE: &str = "SQL Server requires a password change. Open Change SQL Server password below and enter your current (expired) password and a new password, then sign in with the new password.";
 
 fn sql_error(error: &anyhow::Error) -> Option<(u32, u8)> {
     error.chain().find_map(

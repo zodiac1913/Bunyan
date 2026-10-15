@@ -6,12 +6,15 @@ pub const CSS: &str = r#"
 body { margin:0; font:14px/1.45 -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif; background:var(--bg); color:var(--ink); isolation:isolate; }
 /* Fade only the artwork; text, controls, and white reading surfaces stay opaque. */
 body::before { content:""; position:fixed; inset:0; z-index:-1; background:url("/assets/bunyan.jpeg") center / cover no-repeat; opacity:0.08; pointer-events:none; }
+.skip-link:focus { position:fixed; top:8px; left:8px; z-index:1100; padding:8px 12px; background:var(--card); color:var(--ink); outline:2px solid var(--accent); }
 header.top { background:#3b2a1a; color:#fff; padding:10px 24px; display:flex; gap:24px; align-items:center; }
 header.top .brand { font-weight:700; font-size:18px; letter-spacing:.5px; }
-header.top a { color:#f3e3cf; text-decoration:none; }
-header.top a.active { color:#fff; border-bottom:2px solid #deb887; }
+header.top nav { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+header.top nav .bunyan-reactive { color:#f3e3cf; background:transparent; border-color:transparent; }
+header.top nav .bunyan-reactive.active { color:#fff; border-bottom:2px solid #deb887; }
+header.top .bunyan-reactive:focus-visible { outline-color:#deb887; }
 header.top { flex-wrap:wrap; }
-form.logout { margin-left:auto; }
+.header-account { margin-left:auto; display:flex; align-items:center; }
 .login-panel { max-width:480px; margin:8vh auto; }
 .login-panel form { display:grid; gap:10px; }
 .login-panel label { font-weight:600; }
@@ -23,10 +26,15 @@ a { color:var(--accent); }
 .tabs a { padding:6px 14px; border:1px solid var(--line); background:#fff; text-decoration:none; color:var(--ink); }
 .tabs a:first-child { border-radius:6px 0 0 6px; } .tabs a:last-child { border-radius:0 6px 6px 0; }
 .tabs a.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.tabs .bunyan-reactive { background:#fff; color:var(--ink); border-color:var(--line); }
+.tabs .bunyan-reactive.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 .nav a { padding:6px 10px; text-decoration:none; }
 form.inline { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 input, select, button { font:inherit; padding:5px 8px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; }
 button { background:var(--accent); color:#fff; border-color:var(--accent); cursor:pointer; }
+.bunyan-reactive { display:inline-block; font:inherit; padding:5px 8px; border:1px solid var(--accent); border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; }
+.bunyan-reactive:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.bunyan-reactive[disabled] { cursor:not-allowed; }
 .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:12px; margin-bottom:16px; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
 .card .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
@@ -43,10 +51,12 @@ svg .grid { stroke:var(--line); stroke-width:1; }
 table { border-collapse:collapse; width:100%; }
 th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
 th { font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.3px; }
+th.severity-row { font-size:inherit; color:var(--ink); font-weight:400; text-transform:none; letter-spacing:normal; }
 td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
 .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11px; color:#fff; white-space:nowrap; }
 .badge.new { background:#7c3aed; } .badge.fix { background:#047857; }
 .muted { color:var(--muted); } .small { font-size:12px; }
+.ai-model-notice { background:rgba(255,255,255,0.85); color:var(--ink); padding:10px 14px; border-radius:8px; }
 code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; }
 pre { background:#f8fafc; border:1px solid var(--line); border-radius:6px; padding:10px; white-space:pre-wrap; word-break:break-word; max-height:480px; overflow:auto; }
 details.exception > summary { cursor:pointer; color:var(--accent); border:1px solid var(--line); border-radius:6px; padding:6px 10px; width:fit-content; margin:8px 0; }

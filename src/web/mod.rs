@@ -1,7 +1,9 @@
-//! HTTP server (axum) rendering HTML with maud. Navigation is plain links and GET forms, so the
-//! browser needs no JavaScript. Long jobs (imports, LLM suggestions) run as background tasks and
+//! HTTP server (axum) rendering HTML with maud. Navigation uses links and GET forms; dashboard
+//! filters submit immediately on change. Long jobs (imports, LLM suggestions) run as background tasks and
 //! pages auto-refresh via `<meta http-equiv="refresh">` while they are pending.
 
+mod ai_chat;
+mod assets;
 mod auth;
 mod charts;
 mod pages;
@@ -33,10 +35,11 @@ pub struct AppState {
     auth: Arc<auth::Auth>,
     suggesting: Arc<Mutex<HashSet<i64>>>,
     suggest_errors: Arc<Mutex<HashMap<i64, String>>>,
+    desktop_shutdown: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Login uses local HTTP only: refuse remote listeners rather than exposing SQL passwords over HTTP.
-pub async fn serve(cfg: Config, schedule: bool) -> Result<()> {
+pub async fn serve(cfg: Config, schedule: bool, desktop: bool) -> Result<()> {
     let bind = cfg.web.bind.clone();
     let open_browser = cfg.web.open_browser;
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -46,16 +49,16 @@ pub async fn serve(cfg: Config, schedule: bool) -> Result<()> {
         "SQL login requires a loopback web.bind (127.0.0.1 or ::1). Remote HTTP login is not supported."
     );
     let (auth, authenticated) = auth::Auth::new(&cfg, address.port())?;
-    if cfg.schedule.enabled && schedule {
-        tokio::spawn(crate::scheduler::run(cfg.clone(), authenticated));
-    }
+    let scheduler = (cfg.schedule.enabled && schedule)
+        .then(|| tokio::spawn(crate::scheduler::run(cfg.clone(), authenticated)));
+    let (shutdown, stopping) = tokio::sync::watch::channel(false);
     let state = AppState {
         cfg: Arc::new(cfg),
         auth: Arc::new(auth),
         suggesting: Default::default(),
         suggest_errors: Default::default(),
+        desktop_shutdown: desktop.then(|| shutdown.clone()),
     };
-    let app = router(state);
     let url = browser_url(address);
     tracing::info!("web UI at {url}");
     if open_browser {
@@ -66,23 +69,98 @@ pub async fn serve(cfg: Config, schedule: bool) -> Result<()> {
             }
         });
     }
-    axum::serve(listener, app).await?;
+    let result = run_server(listener, state, stopping).await;
+    if let Some(scheduler) = scheduler {
+        scheduler.abort();
+    }
+    result?;
+    Ok(())
+}
+
+/// Drain the logout response before closing the listener. Bound desktop shutdown so another
+/// tab's long AI request cannot keep the app alive indefinitely; runtime exit cancels remaining jobs.
+async fn run_server(
+    listener: tokio::net::TcpListener,
+    state: AppState,
+    mut stopping: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    use std::future::IntoFuture;
+    let mut drain = stopping.clone();
+    let server = axum::serve(listener, router(state)).with_graceful_shutdown(async move {
+        tokio::select! {
+            _ = stopping.wait_for(|stop| *stop) => {},
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result { tracing::error!("Cannot listen for shutdown signal: {error}"); }
+            }
+        }
+    }).into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result?,
+        _ = async { drain.wait_for(|stop| *stop).await.expect("shutdown sender lives for the server lifetime"); } => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), &mut server).await {
+                Ok(result) => result?,
+                Err(_) => tracing::warn!("Desktop shutdown: stopped waiting for in-flight requests after five seconds."),
+            }
+        }
+    }
+    tracing::info!("Web server stopped");
     Ok(())
 }
 
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/login", get(auth::page).post(auth::login))
+        .route(
+            "/password/change",
+            get(auth::password_page).post(auth::change_password),
+        )
         .route("/logout", post(auth::logout))
         .route("/", get(dashboard))
         .route("/assets/bunyan.jpeg", get(background_image))
+        .route("/assets/css/{*path}", get(assets::serve))
+        .route("/assets/js/{*path}", get(assets::serve))
+        .route("/assets/dashboard-state.js", get(dashboard_state_script))
         .route("/groups/{id}", get(group_page))
         .route("/groups/{id}/suggest", post(suggest))
         .route("/imports", get(imports_page).post(run_import))
         .route("/settings", get(settings::page).post(settings::update))
+        .route(
+            "/settings/ai",
+            get(ai_chat::settings_page).post(ai_chat::settings_update),
+        )
+        .route("/ai", get(ai_chat::page).post(ai_chat::send))
+        .route("/assets/ai-chat.js", get(ai_chat::script))
+        .route(
+            "/settings/source",
+            get(settings::source_page).post(settings::source_update),
+        )
         .route("/health", get(|| async { "ok" }))
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard))
         .with_state(state)
+}
+
+/// Browser state belongs to this server run, not a login or a particular dashboard visit.
+fn startup_id() -> &'static str {
+    static ID: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the Unix epoch")
+                .as_nanos()
+        )
+    });
+    &ID
+}
+
+/// Embed the browser helper so distribution needs no separate JavaScript files.
+async fn dashboard_state_script() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("dashboard-state.js"),
+    )
 }
 
 /// Embed the artwork so the dashboard needs no asset files beside the executable.
@@ -109,12 +187,166 @@ mod browser_tests {
     use super::*;
 
     #[test]
+    fn import_ranges_preserve_single_day_and_include_both_endpoints() {
+        let form = |day: &str, through: &str| ImportForm {
+            day: day.into(),
+            through: through.into(),
+        };
+        for through in ["", "2026-10-14"] {
+            let (start, end) = form("2026-10-14", through).range().unwrap();
+            assert_eq!(start, end);
+        }
+        let (start, end) = form("2026-10-12", "2026-10-14").range().unwrap();
+        let days: Vec<_> = start.iter_days().take_while(|day| *day <= end).collect();
+        assert_eq!(days.len(), 3);
+        assert_eq!(days[0].to_string(), "2026-10-12");
+        assert_eq!(days[2].to_string(), "2026-10-14");
+        for (day, through) in [
+            ("", ""),
+            ("not-a-date", ""),
+            ("2026-02-30", ""),
+            ("2026-10-14", "bad"),
+            ("2026-10-14", "2026-10-13"),
+        ] {
+            assert!(form(day, through).range().is_err());
+        }
+    }
+
+    #[test]
+    fn severity_headers_identify_columns_and_rows() {
+        let conn = db::open(std::path::Path::new(":memory:")).unwrap();
+        let mut dash = build_dash(&conn, DashQuery::default()).unwrap();
+        dash.severities = vec![1, 2];
+        dash.sev_types = vec!["Warning".into(), "Error".into()];
+        dash.sev_counts.insert((1, "Warning".into()), 7);
+        let markup = pages::dashboard(&dash).into_string();
+        let table = markup
+            .split("By severity</h2>")
+            .nth(1)
+            .unwrap()
+            .split("</table>")
+            .next()
+            .unwrap();
+        assert_eq!(table.matches("scope=\"col\"").count(), 4);
+        assert!(table.contains("<caption>Log entries by severity and log level</caption>"));
+        assert_eq!(table.matches("scope=\"row\"").count(), 2);
+        assert_eq!(table.matches("<th ").count(), 6);
+        assert!(table.contains("scope=\"row\">1</th>"));
+        assert!(table.contains("scope=\"row\">2</th>"));
+        assert!(table.contains("<td class=\"num\">7</td>"));
+    }
+
+    #[test]
+    fn top_kinds_table_has_a_caption_and_scoped_headers() {
+        let conn = db::open(std::path::Path::new(":memory:")).unwrap();
+        let mut dash = build_dash(&conn, DashQuery::default()).unwrap();
+        dash.top.push(db::GroupRow {
+            id: 1,
+            log_app: "DotNetCats".into(),
+            log_type: "Error".into(),
+            class_name: None,
+            method_name: None,
+            exception_type: None,
+            sample_message: "Example issue".into(),
+            first_seen: dash.start.to_string(),
+            last_seen: dash.start.to_string(),
+            has_suggestion: false,
+            count: 7,
+            max_severity: 3,
+        });
+        for (level, label) in [
+            ("issues", "Issues (non-informational)"),
+            ("Warning", "Warning"),
+        ] {
+            dash.filter.level = level.into();
+            let markup = pages::dashboard(&dash).into_string();
+            let caption = format!("<caption>Top kinds — {label}</caption>");
+            let table = markup
+                .split(&caption)
+                .nth(1)
+                .expect("Missing Top kinds caption for selected filter")
+                .split("</table>")
+                .next()
+                .unwrap();
+            assert_eq!(table.matches("scope=\"col\"").count(), 9);
+            assert_eq!(table.matches("<th ").count(), 9);
+            assert!(table.contains("href=\"/groups/1\">Example issue</a>"));
+            assert!(table.contains("<strong>7</strong>"));
+        }
+    }
+
+    #[test]
+    fn log_badge_colors_meet_normal_text_contrast() {
+        for level in [
+            "Critical",
+            "Error",
+            "Warning",
+            "Information",
+            "Debug",
+            "custom-a",
+            "custom-b",
+            "custom-c",
+            "custom-d",
+            "custom-e",
+        ] {
+            let color = type_color(level);
+            let rgb = u32::from_str_radix(&color[1..], 16).unwrap();
+            let linear = |shift: u32| {
+                let value = ((rgb >> shift) & 255) as f64 / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let luminance = 0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0);
+            let contrast = 1.05 / (luminance + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "{level} ({color}) contrast is {contrast:.2}:1"
+            );
+        }
+    }
+
+    #[test]
     fn dashboard_defaults_and_explicit_filters_survive_navigation() {
         let conn = db::open(std::path::Path::new(":memory:")).unwrap();
         let dash = build_dash(&conn, DashQuery::default()).unwrap();
         assert_eq!(dash.filter.app.as_deref(), Some("DotNetCats"));
-        assert_eq!(dash.filter.level, "all");
+        assert_eq!(dash.filter.level, "issues");
         let markup = pages::dashboard(&dash).into_string();
+        assert!(markup.contains(
+            "<form class=\"inline\" id=\"dashboard-filters\" aria-label=\"Dashboard filters\""
+        ));
+        for control in [
+            "<input type=\"date\" name=\"date\" aria-label=\"Date\"",
+            "<select name=\"app\" aria-label=\"Log app\"",
+            "<select name=\"level\" aria-label=\"Log level\"",
+        ] {
+            assert!(
+                markup.contains(control),
+                "Missing labeled filter: {control}"
+            );
+        }
+        assert!(markup.contains("value=\"issues\" selected>Issues (non-informational)"));
+        for level in ["all", "Warning", "Error"] {
+            let explicit = build_dash(
+                &conn,
+                DashQuery {
+                    level: Some(level.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(explicit.filter.level, level);
+        }
+        assert_eq!(
+            markup
+                .matches("onchange=\"this.form.requestSubmit()\"")
+                .count(),
+            3
+        );
+        assert!(!markup.contains(">Apply</button>"));
         assert!(markup.find("All levels").unwrap() < markup.find("Issues (non-info)").unwrap());
         assert!(
             dash.url(Some(Period::Week), None)
@@ -158,6 +390,29 @@ mod browser_tests {
             .unwrap();
         assert_eq!(bytes.as_ref(), include_bytes!("../../assets/bunyan.jpeg"));
         assert!(bytes.starts_with(&[0xff, 0xd8, 0xff]));
+    }
+
+    #[tokio::test]
+    async fn dashboard_state_is_embedded_with_a_stable_startup_id() {
+        assert_eq!(startup_id(), startup_id());
+        let response = dashboard_state_script().await.into_response();
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/javascript; charset=utf-8"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), include_bytes!("dashboard-state.js"));
+        let conn = db::open(std::path::Path::new(":memory:")).unwrap();
+        let markup =
+            pages::dashboard(&build_dash(&conn, DashQuery::default()).unwrap()).into_string();
+        assert!(markup.contains("id=\"dashboard-filters\""));
+        assert!(markup.contains("src=\"/assets/dashboard-state.js\" defer"));
+        assert!(markup.contains(&format!(
+            "name=\"bunyan-startup\" content=\"{}\"",
+            startup_id()
+        )));
     }
 
     #[test]
@@ -225,15 +480,16 @@ pub fn type_rank(t: &str) -> u8 {
     }
 }
 
+/// Shared chart/badge colors must maintain 4.5:1 contrast against white badge text.
 pub fn type_color(t: &str) -> String {
     match type_rank(t) {
         0 => "#7f1d1d".into(),
         1 => "#dc2626".into(),
-        2 => "#f59e0b".into(),
-        3 => "#3b82f6".into(),
-        4 => "#9ca3af".into(),
+        2 => "#b45309".into(),
+        3 => "#2563eb".into(),
+        4 => "#4b5563".into(),
         _ => {
-            const PALETTE: [&str; 5] = ["#0d9488", "#7c3aed", "#db2777", "#65a30d", "#0891b2"];
+            const PALETTE: [&str; 5] = ["#0f766e", "#7c3aed", "#db2777", "#4d7c0f", "#0e7490"];
             PALETTE[t.bytes().map(usize::from).sum::<usize>() % PALETTE.len()].into()
         }
     }
@@ -341,7 +597,7 @@ fn build_dash(conn: &Connection, q: DashQuery) -> Result<Dash> {
             .level
             .filter(|l| !l.is_empty())
             .map(|l| db::canonical_level(&l).to_string())
-            .unwrap_or_else(|| "all".into()),
+            .unwrap_or_else(|| "issues".into()),
     };
     let (start, end) = period.range(anchor);
     // If the period is still in progress (data stops before `end`), compare against the same
@@ -535,6 +791,14 @@ async fn group_page(
         )
             .into_response());
     };
+    let source_cfg = (*st.cfg).clone();
+    let (source_configured, model) = tokio::task::spawn_blocking(move || -> Result<_> {
+        Ok((
+            source_cfg.source_settings()?.root.is_some(),
+            crate::ai::load(&db::open(&source_cfg.sqlite.path)?, &source_cfg)?.label(),
+        ))
+    })
+    .await??;
     let view = GroupView {
         g,
         daily_labels,
@@ -543,8 +807,8 @@ async fn group_page(
         entries,
         suggesting: st.suggesting.lock().unwrap().contains(&id),
         suggest_error: st.suggest_errors.lock().unwrap().get(&id).cloned(),
-        model: st.cfg.ollama.model.clone(),
-        source_configured: st.cfg.source.root.is_some(),
+        model,
+        source_configured,
     };
     Ok(pages::group(&view).into_response())
 }
@@ -571,6 +835,26 @@ async fn suggest(Extension(st): Extension<AppState>, Path(id): Path<i64>) -> Red
 #[derive(Deserialize)]
 struct ImportForm {
     day: String,
+    #[serde(default)]
+    through: String,
+}
+
+impl ImportForm {
+    fn range(&self) -> Result<(NaiveDate, NaiveDate)> {
+        let start = self
+            .day
+            .parse::<NaiveDate>()
+            .map_err(|_| anyhow::anyhow!("Enter a valid From day (YYYY-MM-DD)."))?;
+        let end = if self.through.trim().is_empty() {
+            start
+        } else {
+            self.through
+                .parse::<NaiveDate>()
+                .map_err(|_| anyhow::anyhow!("Enter a valid Through day (YYYY-MM-DD)."))?
+        };
+        anyhow::ensure!(end >= start, "Through day must be on or after From day.");
+        Ok((start, end))
+    }
 }
 
 async fn imports_page(Extension(st): Extension<AppState>) -> Result<Response, AppError> {
@@ -580,22 +864,38 @@ async fn imports_page(Extension(st): Extension<AppState>) -> Result<Response, Ap
         st.cfg.sqlserver.connection_label()?,
         st.cfg.log_schema()?.table
     );
-    Ok(pages::imports(&st.cfg, &runs, importer::yesterday(), &source_label).into_response())
+    let importing = importer::IMPORT_LOCK.try_lock().is_err();
+    Ok(pages::imports(
+        &st.cfg,
+        &runs,
+        importer::yesterday(),
+        &source_label,
+        importing,
+    )
+    .into_response())
 }
 
 async fn run_import(
     Extension(st): Extension<AppState>,
     Form(f): Form<ImportForm>,
-) -> Result<Redirect, AppError> {
-    let day: NaiveDate = f
-        .day
-        .parse()
-        .map_err(|_| anyhow::anyhow!("invalid date {:?}", f.day))?;
+) -> Result<Response, AppError> {
+    let (start, end) = match f.range() {
+        Ok(range) => range,
+        Err(error) => {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                pages::error_page(&error.to_string()),
+            )
+                .into_response());
+        }
+    };
+    let guard = match importer::IMPORT_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => return Ok((StatusCode::CONFLICT, pages::error_page("An import is already in progress. Wait for it to finish before starting another range.")).into_response()),
+    };
     let cfg = st.cfg.clone();
     tokio::spawn(async move {
-        let _ = importer::import_day(&cfg, day, "manual").await;
+        importer::import_range(&cfg, start, end, guard).await;
     });
-    // Give the run a moment to register so the redirected page shows it as running.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    Ok(Redirect::to("/imports"))
+    Ok(Redirect::to("/imports").into_response())
 }

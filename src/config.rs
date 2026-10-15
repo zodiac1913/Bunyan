@@ -2,7 +2,7 @@
 //! SQL access prefers a local `dataaccess.json`; TOML/env credentials remain a fallback.
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -20,6 +20,9 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SqlServerConfig {
+    /// Credential-free target configured by first-run web setup; never serialized to TOML.
+    #[serde(skip)]
+    pub web_target: Option<String>,
     /// Web sessions override file/env authentication without persisting their password.
     #[serde(skip)]
     pub credentials: Option<SqlCredentials>,
@@ -58,6 +61,7 @@ impl std::fmt::Debug for SqlCredentials {
 impl Default for SqlServerConfig {
     fn default() -> Self {
         Self {
+            web_target: None,
             credentials: None,
             dataaccess_file: PathBuf::from("dataaccess.json"),
             host: "localhost".into(),
@@ -83,7 +87,7 @@ impl SqlServerConfig {
                 &credentials.username,
                 &credentials.password,
             ));
-        } else if !self.dataaccess_file.try_exists()? {
+        } else if self.web_target.is_some() || !self.dataaccess_file.try_exists()? {
             c.authentication(tiberius::AuthMethod::sql_server(
                 &self.user,
                 self.resolve_password()?,
@@ -94,28 +98,8 @@ impl SqlServerConfig {
 
     /// Reads server/database/TLS settings without requiring a fallback password.
     pub fn connection_target(&self) -> Result<tiberius::Config> {
-        let mut c = if self.dataaccess_file.try_exists()? {
-            #[derive(Deserialize)]
-            struct DataAccess {
-                #[serde(rename = "DevConnection")]
-                connection: String,
-            }
-
-            let text = std::fs::read_to_string(&self.dataaccess_file)
-                .with_context(|| format!("reading {}", self.dataaccess_file.display()))?;
-            // Parser errors may contain credential values; report only the location/format.
-            let access: DataAccess = serde_json::from_str(&text).map_err(|e| {
-                anyhow::anyhow!(
-                    "{}: expected JSON with a string DevConnection (line {}, column {})",
-                    self.dataaccess_file.display(),
-                    e.line(),
-                    e.column()
-                )
-            })?;
-            if access.connection.trim().is_empty() {
-                bail!("{}: DevConnection is empty", self.dataaccess_file.display());
-            }
-            tiberius::Config::from_ado_string(&access.connection).map_err(|_| {
+        let mut c = if let Some(connection) = self.local_connection_string()? {
+            tiberius::Config::from_ado_string(&connection).map_err(|_| {
                 anyhow::anyhow!(
                     "{}: invalid DevConnection SQL Server connection string",
                     self.dataaccess_file.display()
@@ -141,6 +125,38 @@ impl SqlServerConfig {
         Ok(c)
     }
 
+    /// Read the local connection string without exposing credentials in parser errors.
+    pub fn local_connection_string(&self) -> Result<Option<String>> {
+        if let Some(target) = &self.web_target {
+            return Ok(Some(target.clone()));
+        }
+        if self.dataaccess_file.try_exists()? {
+            #[derive(Deserialize)]
+            struct DataAccess {
+                #[serde(rename = "DevConnection")]
+                connection: String,
+            }
+
+            let text = std::fs::read_to_string(&self.dataaccess_file)
+                .with_context(|| format!("reading {}", self.dataaccess_file.display()))?;
+            // Parser errors may contain credential values; report only the location/format.
+            let access: DataAccess = serde_json::from_str(&text).map_err(|e| {
+                anyhow::anyhow!(
+                    "{}: expected JSON with a string DevConnection (line {}, column {})",
+                    self.dataaccess_file.display(),
+                    e.line(),
+                    e.column()
+                )
+            })?;
+            if access.connection.trim().is_empty() {
+                bail!("{}: DevConnection is empty", self.dataaccess_file.display());
+            }
+            Ok(Some(access.connection))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Identifies the active configuration without exposing a connection string or password.
     pub fn connection_label(&self) -> Result<String> {
         if let Some(credentials) = &self.credentials {
@@ -150,7 +166,12 @@ impl SqlServerConfig {
                 self.connection_target()?.get_addr()
             ));
         }
-        if self.dataaccess_file.try_exists()? {
+        if self.web_target.is_some() {
+            Ok(format!(
+                "{} (saved connection)",
+                self.connection_target()?.get_addr()
+            ))
+        } else if self.dataaccess_file.try_exists()? {
             Ok(format!(
                 "{} (DevConnection)",
                 self.dataaccess_file.display()
@@ -245,7 +266,7 @@ impl Default for OllamaConfig {
 }
 
 /// Optional read-only checkout of the main application; used to add code context to LLM prompts.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SourceConfig {
     pub root: Option<PathBuf>,
@@ -284,6 +305,11 @@ impl Default for WebConfig {
 }
 
 impl Config {
+    /// Read local source settings for every suggestion, including CLI and scheduled work.
+    pub fn source_settings(&self) -> Result<SourceConfig> {
+        crate::source_code::load(&crate::db::open(&self.sqlite.path)?, &self.source)
+    }
+
     /// Reloads locally saved source settings so CLI and scheduled imports see web edits immediately.
     pub fn log_schema(&self) -> Result<crate::log_schema::LogSchema> {
         crate::log_schema::LogSchema::load(

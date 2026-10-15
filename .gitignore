@@ -1,6 +1,9 @@
 /target
+.DS_Store
 bunyan.toml
 dataaccess.json
 *.db
 *.db-wal
 *.db-shm
+tools/PasswordChange/bin/
+tools/PasswordChange/obj/

@@ -17,6 +17,25 @@ pub fn yesterday() -> NaiveDate {
 /// Imports one day and records the outcome in `import_runs`. Returns `(fetched, inserted)`.
 pub async fn import_day(cfg: &Config, day: NaiveDate, trigger: &str) -> Result<(usize, usize)> {
     let _guard = IMPORT_LOCK.lock().await;
+    import_day_locked(cfg, day, trigger).await
+}
+
+/// Web ranges reserve the import lock before responding, then use one captured login for every
+/// inclusive day. Each day records its own outcome; failures do not silently skip remaining days.
+pub async fn import_range(
+    cfg: &Config,
+    start: NaiveDate,
+    end: NaiveDate,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+) {
+    for day in start.iter_days().take_while(|day| *day <= end) {
+        if let Err(error) = import_day_locked(cfg, day, "manual").await {
+            tracing::error!(%day, error = %format!("{error:#}"), "manual range day failed; continuing remaining days");
+        }
+    }
+}
+
+async fn import_day_locked(cfg: &Config, day: NaiveDate, trigger: &str) -> Result<(usize, usize)> {
     let path = cfg.sqlite.path.clone();
     let run_id = {
         let conn = db::open(&path)?;

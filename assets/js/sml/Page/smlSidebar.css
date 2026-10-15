@@ -1,0 +1,303 @@
+/* sml-sidebar layout + responsive behavior */
+
+sml-sidebar .sml-sidebar-wrap {
+	--sml-sidebar-width: 17%;
+	--sml-sidebar-mini-width: 50px;
+	width: 100%;
+	max-width: 100%;
+}
+
+@media (max-width: 575.98px) {
+	sml-sidebar .sml-sidebar-wrap {
+		--sml-sidebar-width: min(82vw, 196px);
+		--sml-sidebar-mini-width: 44px;
+	}
+}
+
+@media (min-width: 576px) and (max-width: 767.98px) {
+	sml-sidebar .sml-sidebar-wrap {
+		--sml-sidebar-width: 216px;
+		--sml-sidebar-mini-width: 46px;
+	}
+}
+
+@media (min-width: 768px) and (max-width: 991.98px) {
+	sml-sidebar .sml-sidebar-wrap {
+		--sml-sidebar-width: 19%;
+		--sml-sidebar-mini-width: 50px;
+	}
+}
+
+@media (min-width: 992px) and (max-width: 1199.98px) {
+	sml-sidebar .sml-sidebar-wrap {
+		--sml-sidebar-width: 17%;
+		--sml-sidebar-mini-width: 54px;
+	}
+}
+
+@media (min-width: 1200px) {
+	sml-sidebar .sml-sidebar-wrap {
+		--sml-sidebar-width: 15%;
+		--sml-sidebar-mini-width: 54px;
+	}
+}
+
+sml-sidebar .sml-sidebar-shell {
+	width: 100%;
+	min-width: 0;
+	align-items: stretch;
+}
+
+sml-sidebar .sml-sidebar-page-content {
+	min-width: 0;
+	width: 100%;
+}
+
+sml-sidebar .sml-sidebar {
+	width: var(--sml-sidebar-width);
+	min-height: 60vh;
+	max-width: var(--sml-sidebar-width);
+	flex: 0 0 var(--sml-sidebar-width);
+	min-width: 0;
+	padding: 0.65rem 0.5rem 0.75rem;
+	border-radius: 0.25rem;
+	overflow-x: hidden;
+	overflow-y: auto;
+	will-change: width, max-width, opacity, transform;
+	transform: translateX(0);
+	opacity: 1;
+	transition: width 220ms ease, max-width 220ms ease, padding 220ms ease, opacity 160ms ease, transform 220ms ease;
+}
+
+sml-sidebar .sml-sidebar.sml-sidebar-mini {
+	width: clamp(0px, var(--sml-sidebar-mini-width), 54px);
+	max-width: 54px;
+	flex-basis: clamp(0px, var(--sml-sidebar-mini-width), 54px);
+	padding-left: 0.25rem;
+	padding-right: 0.25rem;
+}
+
+sml-sidebar .sml-sidebar.sml-sidebar-hidden {
+	width: 0;
+	max-width: 0;
+	flex-basis: 0;
+	padding-left: 0;
+	padding-right: 0;
+	opacity: 0;
+	transform: translateX(-10px);
+	pointer-events: none;
+	border-width: 0;
+	margin-right: 0;
+}
+
+sml-sidebar .sml-sidebar-role-group {
+	gap: 0;
+}
+
+sml-sidebar .sml-sidebar-role-group .sidebarRoleBtns {
+	margin: 0 !important;
+	border-radius: 0;
+}
+
+sml-sidebar .sml-sidebar-role-group .sidebarRoleBtns + .sidebarRoleBtns {
+	border-top-width: 0 !important;
+}
+
+sml-sidebar .sml-sidebar-role-group .sidebarRoleBtns:first-of-type {
+	border-top-left-radius: 0.45rem;
+	border-top-right-radius: 0.45rem;
+}
+
+sml-sidebar .sml-sidebar-role-group .sidebarRoleBtns:last-of-type {
+	border-bottom-left-radius: 0.45rem;
+	border-bottom-right-radius: 0.45rem;
+}
+
+sml-sidebar .sml-sidebar-group-label {
+	border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+	margin-bottom: 0.35rem;
+	padding-bottom: 0.35rem;
+}
+
+sml-sidebar .sml-sidebar-group-label .ccsbButtonText {
+	letter-spacing: 0.04em;
+	font-size: 0.75rem;
+	text-transform: uppercase;
+	color: #d3deea;
+}
+
+sml-sidebar .sidebarBtns,
+sml-sidebar .sidebarRelatedBtns {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	border-radius: 0.45rem;
+	padding: 0.4rem 0.45rem;
+	transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 120ms ease;
+}
+
+sml-sidebar .sidebarRoleBtns.btn-outline-primary,
+sml-sidebar .sidebarRelatedBtns.btn-outline-primary {
+	background-color: rgba(15, 23, 42, 0.28);
+	border: 1px solid rgba(148, 163, 184, 0.35) !important;
+	color: #f8fbff !important;
+}
+
+sml-sidebar .sidebarRelatedBtns.btn-outline-dark {
+	background-color: rgba(15, 23, 42, 0.18);
+	border: 1px solid rgba(148, 163, 184, 0.3) !important;
+	color: #d9f6ff !important;
+}
+
+sml-sidebar .sidebarRoleBtns.btn-primary,
+sml-sidebar .sidebarRoleBtns[data-active="true"] {
+	background: linear-gradient(180deg, rgba(59, 130, 246, 0.9) 0%, rgba(37, 99, 235, 0.9) 100%);
+	border: 1px solid rgba(147, 197, 253, 0.8) !important;
+	color: #ffffff !important;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+sml-sidebar .sidebarRelatedBtns[data-active="true"] {
+	background: linear-gradient(180deg, rgba(59, 130, 246, 0.9) 0%, rgba(37, 99, 235, 0.9) 100%);
+	border: 1px solid rgba(147, 197, 253, 0.8) !important;
+	color: #ffffff !important;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+sml-sidebar .sidebarRoleBtns:hover,
+sml-sidebar .sidebarRoleBtns:focus-visible,
+sml-sidebar .sidebarRelatedBtns:hover,
+sml-sidebar .sidebarRelatedBtns:focus-visible {
+	background-color: rgba(59, 130, 246, 0.26);
+	border-color: rgba(147, 197, 253, 0.68) !important;
+	color: #ffffff !important;
+	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.24);
+	outline: none;
+}
+
+sml-sidebar .sidebarRoleBtns:active,
+sml-sidebar .sidebarRelatedBtns:active {
+	transform: translateY(1px);
+}
+
+sml-sidebar .sidebarBtns > span {
+	display: inline-flex;
+	align-items: center;
+	min-width: 0;
+	width: 100%;
+}
+
+sml-sidebar .sidebarBtns .hideOnMediumOrLessWindow {
+	margin-left: 0.15rem;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Keep button labels visible in standard mode regardless of viewport. */
+sml-sidebar .sml-sidebar:not(.sml-sidebar-mini) .sidebarBtns .hideOnMediumOrLessWindow {
+	display: inline !important;
+}
+
+sml-sidebar .sml-sidebar.sml-sidebar-mini .sidebarBtns,
+sml-sidebar .sml-sidebar.sml-sidebar-mini .sidebarRelatedBtns {
+	justify-content: center;
+	padding-left: 0.25rem;
+	padding-right: 0.25rem;
+}
+
+sml-sidebar .sml-sidebar.sml-sidebar-mini .sidebarBtns > span {
+	width: auto;
+	justify-content: center;
+}
+
+sml-sidebar .sml-sidebar.sml-sidebar-mini .sidebarBtns .hideOnMediumOrLessWindow,
+sml-sidebar .sml-sidebar.sml-sidebar-mini .ccsbButtonText,
+sml-sidebar .sml-sidebar.sml-sidebar-mini .cssbButtonText,
+sml-sidebar .sml-sidebar.sml-sidebar-mini #uimedium,
+sml-sidebar .sml-sidebar.sml-sidebar-mini #uilgUserInfoDiv,
+sml-sidebar .sml-sidebar.sml-sidebar-mini #rolesHeaderBigScreen {
+	display: none !important;
+}
+
+sml-sidebar .sml-sidebar:not(.sml-sidebar-mini) #usmall {
+	display: none !important;
+}
+
+sml-sidebar .sml-sidebar.sml-sidebar-mini #usmall {
+	display: flex !important;
+	justify-content: center;
+	margin-bottom: 0.5rem;
+}
+
+sml-sidebar #uimedium,
+sml-sidebar #uilgUserInfoDiv {
+	margin-bottom: 0.35rem;
+}
+
+@media (max-width: 767.98px) {
+	sml-sidebar .sml-sidebar {
+		width: var(--sml-sidebar-mini-width);
+		max-width: var(--sml-sidebar-mini-width);
+		padding-left: 0.25rem;
+		padding-right: 0.25rem;
+	}
+
+	sml-sidebar .sml-sidebar .sidebarBtns,
+	sml-sidebar .sml-sidebar .sidebarRelatedBtns {
+		justify-content: center;
+		padding-left: 0.25rem;
+		padding-right: 0.25rem;
+	}
+
+	sml-sidebar .sml-sidebar .sidebarBtns > span {
+		width: auto;
+		justify-content: center;
+	}
+
+	sml-sidebar .sml-sidebar .sidebarBtns .hideOnMediumOrLessWindow,
+	sml-sidebar .sml-sidebar:not(.sml-sidebar-mini) .sidebarBtns .hideOnMediumOrLessWindow,
+	sml-sidebar .sml-sidebar .ccsbButtonText,
+	sml-sidebar .sml-sidebar .cssbButtonText,
+	sml-sidebar .sml-sidebar #uimedium,
+	sml-sidebar .sml-sidebar #uilgUserInfoDiv,
+	sml-sidebar .sml-sidebar #rolesHeaderBigScreen {
+		display: none !important;
+	}
+
+	sml-sidebar .sml-sidebar #usmall {
+		display: flex !important;
+		justify-content: center;
+		margin-bottom: 0.5rem;
+	}
+}
+
+@media (min-width: 768px) and (max-width: 991.98px) {
+	sml-sidebar .sml-sidebar:not(.sml-sidebar-mini) #uimedium {
+		display: block !important;
+	}
+
+	sml-sidebar .sml-sidebar:not(.sml-sidebar-mini) #uilgUserInfoDiv {
+		display: none !important;
+	}
+}
+
+@media (min-width: 992px) {
+	sml-sidebar .sml-sidebar:not(.sml-sidebar-mini) #uimedium {
+		display: none !important;
+	}
+
+	sml-sidebar .sml-sidebar:not(.sml-sidebar-mini) #uilgUserInfoDiv {
+		display: block !important;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	sml-sidebar .sml-sidebar,
+	sml-sidebar .sidebarBtns,
+	sml-sidebar .sidebarRelatedBtns {
+		transition: none !important;
+	}
+}

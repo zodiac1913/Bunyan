@@ -1,16 +1,21 @@
 //! Bunyan: pulls `CORE.Log` rows from SQL Server into SQLite daily, groups like errors,
 //! and serves a dashboard of level/severity counts and day/week/month trends with LLM fix suggestions.
 
+mod ai;
 mod config;
+mod connection;
 mod db;
 mod demo;
+mod desktop;
 mod importer;
 mod llm;
 mod log_schema;
 mod normalize;
+mod password_change;
 mod periods;
 mod scheduler;
 mod source;
+mod source_code;
 mod web;
 
 use anyhow::{Result, bail};
@@ -21,19 +26,27 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "bunyan",
-    version,
+    version = env!("BUNYAN_VERSION"),
     about = "SQL Server log summarizer and trend dashboard"
 )]
 struct Cli {
     /// Path to the TOML config file.
-    #[arg(short, long, global = true, default_value = "bunyan.toml")]
-    config: PathBuf,
+    #[arg(short, long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the desktop app; Sign Out stops the server. This is the default when double-clicked.
+    Desktop {
+        #[arg(long)]
+        no_schedule: bool,
+        /// Useful for terminal diagnostics without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     /// Run the web UI and the daily scheduler.
     Serve {
         /// Do not run the built-in daily import scheduler.
@@ -52,7 +65,7 @@ enum Command {
         #[arg(long, requires = "from")]
         to: Option<NaiveDate>,
     },
-    /// Generate LLM fix suggestions with local Ollama.
+    /// Generate fix suggestions with the active AI provider (local Ollama by default).
     Suggest {
         /// A specific error group id.
         #[arg(long)]
@@ -75,68 +88,131 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "bunyan=info".into()),
-        )
-        .init();
     let cli = Cli::parse();
-    let cfg = config::Config::load(&cli.config)?;
-
-    match cli.command {
-        Command::Serve { no_schedule } => {
-            db::fail_stale_runs(&db::open(&cfg.sqlite.path)?)?;
-            web::serve(cfg, !no_schedule).await?;
-        }
-        Command::Import { date, from, to } => {
-            let days = match (date, from, to) {
-                (Some(d), _, _) => vec![d],
-                (None, Some(f), Some(t)) => {
-                    if t < f {
-                        bail!("--to must not be before --from");
-                    }
-                    f.iter_days().take_while(|d| *d <= t).collect()
-                }
-                _ => importer::pending_days(&cfg)?,
-            };
-            if days.is_empty() {
-                println!("Already up to date.");
-            }
-            let mut failed = 0;
-            for d in days {
-                match importer::import_day(&cfg, d, "cli").await {
-                    Ok((f, i)) => println!("{d}: fetched {f}, new {i}"),
-                    Err(e) => {
-                        failed += 1;
-                        eprintln!("{d}: FAILED {e:#}");
-                    }
-                }
-            }
-            if failed > 0 {
-                bail!("{failed} day(s) failed");
-            }
-        }
-        Command::Suggest { group, top, days } => match group {
-            Some(id) => println!("{}", llm::suggest_group(&cfg, id).await?),
-            None => {
-                let end = importer::yesterday() + Duration::days(1);
-                let n = llm::suggest_top(&cfg, end - Duration::days(days), end, top).await?;
-                println!("Generated {n} suggestion(s).");
-            }
-        },
-        Command::Check => {
-            let mapping = cfg.log_schema()?;
-            let (rows, latest) = source::ping(&cfg.sqlserver, &mapping).await?;
-            println!(
-                "Connected. {} has {rows} rows; latest timestamp: {latest:?}",
-                mapping.table
-            );
-        }
-        Command::SeedDemo { days } => {
-            let n = demo::seed(&cfg.sqlite.path, days, importer::yesterday())?;
-            println!("Inserted {n} demo rows into {}", cfg.sqlite.path.display());
-        }
+    let command = cli.command.unwrap_or(Command::Desktop {
+        no_schedule: false,
+        no_browser: false,
+    });
+    let desktop = if matches!(command, Command::Desktop { .. }) {
+        Some(desktop::Desktop::prepare(cli.config.clone())?)
+    } else {
+        None
+    };
+    let logging = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "bunyan=info".into()),
+    );
+    if let Some(app) = &desktop {
+        logging
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(app.log.try_clone()?))
+            .init();
+        tracing::info!("Desktop configuration: {}", app.config.display());
+    } else {
+        logging.init();
     }
-    Ok(())
+    let result = async {
+        let mut cfg = match &desktop {
+            Some(app) => app.load_config()?,
+            None => config::Config::load(&cli.config.unwrap_or_else(|| "bunyan.toml".into()))?,
+        };
+        connection::apply_saved(&mut cfg)?;
+
+        match command {
+            Command::Desktop {
+                no_schedule,
+                no_browser,
+            } => {
+                cfg.web.open_browser = !no_browser;
+                db::fail_stale_runs(&db::open(&cfg.sqlite.path)?)?;
+                web::serve(cfg, !no_schedule, true).await?;
+            }
+            Command::Serve { no_schedule } => {
+                db::fail_stale_runs(&db::open(&cfg.sqlite.path)?)?;
+                web::serve(cfg, !no_schedule, false).await?;
+            }
+            Command::Import { date, from, to } => {
+                let days = match (date, from, to) {
+                    (Some(d), _, _) => vec![d],
+                    (None, Some(f), Some(t)) => {
+                        if t < f {
+                            bail!("--to must not be before --from");
+                        }
+                        f.iter_days().take_while(|d| *d <= t).collect()
+                    }
+                    _ => importer::pending_days(&cfg)?,
+                };
+                if days.is_empty() {
+                    println!("Already up to date.");
+                }
+                let mut failed = 0;
+                for d in days {
+                    match importer::import_day(&cfg, d, "cli").await {
+                        Ok((f, i)) => println!("{d}: fetched {f}, new {i}"),
+                        Err(e) => {
+                            failed += 1;
+                            eprintln!("{d}: FAILED {e:#}");
+                        }
+                    }
+                }
+                if failed > 0 {
+                    bail!("{failed} day(s) failed");
+                }
+            }
+            Command::Suggest { group, top, days } => match group {
+                Some(id) => println!("{}", llm::suggest_group(&cfg, id).await?),
+                None => {
+                    let end = importer::yesterday() + Duration::days(1);
+                    let n = llm::suggest_top(&cfg, end - Duration::days(days), end, top).await?;
+                    println!("Generated {n} suggestion(s).");
+                }
+            },
+            Command::Check => {
+                let mapping = cfg.log_schema()?;
+                let (rows, latest) = source::ping(&cfg.sqlserver, &mapping).await?;
+                println!(
+                    "Connected. {} has {rows} rows; latest timestamp: {latest:?}",
+                    mapping.table
+                );
+            }
+            Command::SeedDemo { days } => {
+                let n = demo::seed(&cfg.sqlite.path, days, importer::yesterday())?;
+                println!("Inserted {n} demo rows into {}", cfg.sqlite.path.display());
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = &result {
+        tracing::error!("{error:#}");
+    }
+    result
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn no_arguments_select_desktop_defaults_and_service_arguments_still_parse() {
+        let cli = Cli::try_parse_from(["bunyan"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(cli.config.is_none());
+        let cli =
+            Cli::try_parse_from(["bunyan", "-c", "custom.toml", "serve", "--no-schedule"]).unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("custom.toml")));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Serve { no_schedule: true })
+        ));
+        let cli =
+            Cli::try_parse_from(["bunyan", "desktop", "--no-browser", "--no-schedule"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Desktop {
+                no_schedule: true,
+                no_browser: true
+            })
+        ));
+    }
 }

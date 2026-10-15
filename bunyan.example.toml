@@ -2,6 +2,8 @@
 # Copy dataaccess.example.json to dataaccess.json and set your connection string.
 # dataaccess.json supplies server settings; CLI uses its credentials.
 # Web SQL authentication comes from the login page and optional OS-keychain storage.
+# Desktop first run asks for an ADO.NET connection string; its credential-free target is
+# saved in SQLite and overrides these fallback settings. Remember controls credential storage.
 
 [sqlserver]
 dataaccess_file = "dataaccess.json" # relative to this TOML file
@@ -25,12 +27,14 @@ max_catchup_days = 7     # missed days to back-fill after downtime
 auto_suggest_top = 5     # LLM suggestions after each run (0 = off)
 
 [ollama]
+# Initial local AI defaults; Settings > AI saves the single active provider and models in SQLite.
 url = "http://localhost:11434"
 model = "qwen2.5-coder:latest"
 timeout_secs = 300
 
 [source]
-# Optional read-only checkout of the main app; adds code context to suggestions.
+# Initial source lookup defaults; Settings > Source Code saves a local SQLite override.
+# Ollama stays loopback; hosted AI requires consent in Settings > AI. Checkout files are never edited.
 # root = "/path/to/main-app"
 extensions = ["cs", "vb", "sql"]
 context_lines = 40

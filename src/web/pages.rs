@@ -15,21 +15,46 @@ pub(super) fn layout(title: &str, active: &str, refresh_secs: Option<u32>, body:
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                meta name="bunyan-startup" content=(super::startup_id());
+                script src="/assets/dashboard-state.js" defer {}
+                script src="/assets/js/logout.js" defer {}
                 @if let Some(s) = refresh_secs { meta http-equiv="refresh" content=(s); }
                 title { (title) " · Bunyan" }
+                link rel="stylesheet" href="/assets/css/catsStrap.css";
+                link rel="stylesheet" href="/assets/css/bootstrap/icons/font/bootstrap-icons.css";
+                link id="smly-css" rel="stylesheet" href="/assets/js/sml/sml.css";
+                link id="smly-sidebar-css" rel="stylesheet" href="/assets/js/sml/Page/smlSidebar.css";
                 style { (PreEscaped(style::CSS)) }
+                script src="/assets/css/bootstrap/js/bootstrap.bundle.min.js" defer {}
+                script type="module" src="/assets/js/sml/sml.js" {}
             }
             body {
+                a.skip-link.visually-hidden-focusable href="#pageContentWrapper" { "Skip to main content" }
                 header.top {
                     span.brand { "🪓 Bunyan" }
                     @if active != "login" {
-                        a href="/" class=[(active == "dash").then_some("active")] { "Dashboard" }
-                        a href="/imports" class=[(active == "imports").then_some("active")] { "Imports" }
-                        a href="/settings" class=[(active == "settings").then_some("active")] { "Settings" }
-                        form.logout method="post" action="/logout" { button type="submit" { "Sign out" } }
+                        nav aria-label="Main navigation" {
+                            @for (section, url, text, icon) in [
+                                ("dash", "/", "Dashboard", "bi bi-speedometer2"),
+                                ("imports", "/imports", "Imports", "bi bi-database-down"),
+                                ("settings", "/settings", "Settings", "bi bi-gear"),
+                                ("ai", "/ai", "AI Chat", "bi bi-chat-dots"),
+                            ] {
+                                sml-reactive-button.bunyan-reactive class=[(active == section).then_some("active")] type="button" role="link" aria-current=[(active == section).then_some("page")] aria-label=(text) title=(text) data-icon=(icon) data-text=(text) data-url=(url) data-button-type="link" {}
+                            }
+                        }
+                        div.header-account {
+                            span.me-5 title="Bunyan version" { (env!("BUNYAN_VERSION")) }
+                            sml-reactive-button.bunyan-reactive.logout id="sign-out" type="button" aria-label="Sign out" title="Sign out" data-icon="bi bi-box-arrow-right" data-text="Sign out" {}
+                        }
                     }
                 }
-                main { (body) }
+                main id="pageContentWrapper" tabindex="-1" {
+                    noscript { p.flash { "JavaScript is required for action buttons. Enable it to sign in, save settings, import logs, or request AI suggestions." } }
+                    p.flash id="dashboard-state-error" hidden {}
+                    p.flash id="logout-error" role="alert" hidden {}
+                    (body)
+                }
             }
         }
     }
@@ -115,18 +140,17 @@ pub fn dashboard(d: &Dash) -> Markup {
                 a href=(d.url(None, Some(d.period.next_start(d.anchor)))) { "Next " (period_name) " ▶" }
                 a href=(format!("/?period={}&level={}&app={}", period_name, enc(&d.filter.level), enc(d.filter.app.as_deref().unwrap_or("")))) { "Latest" }
             }
-            form.inline method="get" action="/" {
+            form.inline id="dashboard-filters" aria-label="Dashboard filters" method="get" action="/" {
                 input type="hidden" name="period" value=(period_name);
-                input type="date" name="date" value=(d.anchor.to_string());
-                select name="app" {
+                input type="date" name="date" aria-label="Date" value=(d.anchor.to_string()) onchange="this.form.requestSubmit()";
+                select name="app" aria-label="Log app" onchange="this.form.requestSubmit()" {
                     option value="" selected[d.filter.app.is_none()] { "All apps" }
                     @for a in &d.apps { option value=(a) selected[d.filter.app.as_deref() == Some(a.as_str())] { (a) } }
                 }
-                select name="level" {
+                select name="level" aria-label="Log level" onchange="this.form.requestSubmit()" {
                     @for l in ["all", "issues"] { option value=(l) selected[d.filter.level == l] { (level_label(l)) } }
                     @for t in &d.types { option value=(t) selected[d.filter.level == *t] { (t) " only" } }
                 }
-                button type="submit" { "Apply" }
             }
         }
         h1 { (d.period.label(d.anchor)) }
@@ -173,15 +197,16 @@ fn severity_table(d: &Dash) -> Markup {
     }
     html! {
         table {
+            caption { "Log entries by severity and log level" }
             thead { tr {
-                th { "Severity" }
-                @for t in &d.sev_types { th.num { (type_badge(t)) } }
-                th.num { "Total" }
+                th scope="col" { "Severity" }
+                @for t in &d.sev_types { th.num scope="col" { (type_badge(t)) } }
+                th.num scope="col" { "Total" }
             } }
             tbody {
                 @for s in &d.severities {
                     tr {
-                        td { (s) }
+                        th.severity-row scope="row" { (s) }
                         @for t in &d.sev_types {
                             td.num { (d.sev_counts.get(&(*s, t.clone())).map(|c| fmt_num(*c)).unwrap_or_default()) }
                         }
@@ -200,9 +225,10 @@ fn top_table(d: &Dash) -> Markup {
     let (start, end) = (d.start.to_string(), d.end.to_string());
     html! {
         table {
+            caption { "Top kinds — " (level_label(&d.filter.level)) }
             thead { tr {
-                th { "Kind" } th { "App" } th { "Level" } th { "Where" } th.num { "Max sev" }
-                th.num { "Count" } th.num { "Prev" } th.num { "Change" } th { "Fix" }
+                th scope="col" { "Kind" } th scope="col" { "App" } th scope="col" { "Level" } th scope="col" { "Where" } th.num scope="col" { "Max sev" }
+                th.num scope="col" { "Count" } th.num scope="col" { "Prev" } th.num scope="col" { "Change" } th scope="col" { "Fix" }
             } }
             tbody {
                 @for g in &d.top {
@@ -210,7 +236,7 @@ fn top_table(d: &Dash) -> Markup {
                     @let first_day = g.first_seen.get(..10).unwrap_or("");
                     tr {
                         td {
-                            a href=(format!("/groups/{}", g.id)) { (truncate(&g.template, 140)) }
+                            a href=(format!("/groups/{}", g.id)) { (truncate(&g.sample_message, 140)) }
                             @if first_day >= start.as_str() && first_day < end.as_str() { " " span.badge.new { "NEW" } }
                             @if let Some(ex) = &g.exception_type {
                                 div.small.muted { code { (ex) } }
@@ -244,7 +270,8 @@ pub fn group(v: &GroupView) -> Markup {
     let g = &v.g;
     let body = html! {
         p { a href="/" { "← Dashboard" } }
-        h1 { (type_badge(&g.log_type)) " " (truncate(&g.template, 160)) }
+        p { a href=(format!("/ai?group={}", g.id)) { "Discuss this issue with AI" } }
+        h1 { (type_badge(&g.log_type)) " " (truncate(&g.sample_message, 160)) }
         @if let Some(e) = &v.suggest_error { div.flash { "Suggestion failed: " (e) } }
         div.grid2 {
             div.panel {
@@ -271,7 +298,9 @@ pub fn group(v: &GroupView) -> Markup {
             @if v.suggesting {
                 p.muted { "Generating with " code { (v.model) } "… this page refreshes automatically." }
             } @else {
-                @if let Some(s) = &g.suggestion {
+                @if g.suggestion.as_deref().is_some_and(crate::db::suggestion_is_outdated) {
+                    p.flash { "This saved suggestion is outdated because it used grouping placeholders instead of original error details. Regenerate it to analyze the original message and exception." }
+                } @else if let Some(s) = &g.suggestion {
                     pre.suggestion { (s) }
                     p.small.muted {
                         "Generated by " (g.suggestion_model.as_deref().unwrap_or("?")) " at " (g.suggestion_at.as_deref().unwrap_or("?"))
@@ -279,17 +308,20 @@ pub fn group(v: &GroupView) -> Markup {
                     }
                 }
                 form method="post" action=(format!("/groups/{}/suggest", g.id)) {
-                    button type="submit" { @if g.suggestion.is_some() { "Regenerate" } @else { "Suggest a fix" } }
+                    @let text = if g.suggestion.is_some() { "Regenerate" } else { "Suggest a fix" };
+                    sml-reactive-button.bunyan-reactive type="submit" aria-label=(text) title=(text) data-icon="bi bi-lightbulb" data-text=(text) {}
                     span.small.muted {
-                        " via local Ollama (" (v.model) ")"
-                        @if v.source_configured { ", with source-code context" }
+                        " via " (v.model)
+                        @if v.source_configured { ", source lookup enabled (matches included when found)" }
+                        @else { " — " a href="/settings/source" { "Connect related source code" } }
                     }
                 }
             }
         }
         div.panel {
-            h2 { "Normalized message" }
-            pre { (g.template) }
+            h2 { "Grouping pattern (not the original error)" }
+            p.small.muted { "Bracketed labels represent values combined for grouping. Use the original sample message below to diagnose the error." }
+            pre { (crate::normalize::display_template(&g.template)) }
             h2 { "Sample message" }
             pre { (g.sample_message) }
             @if let Some(ex) = &g.sample_exception {
@@ -330,7 +362,7 @@ pub fn group(v: &GroupView) -> Markup {
         }
     };
     layout(
-        &truncate(&g.template, 60),
+        &truncate(&g.sample_message, 60),
         "",
         v.suggesting.then_some(5),
         body,
@@ -342,8 +374,9 @@ pub fn imports(
     runs: &[ImportRun],
     yesterday: NaiveDate,
     source_label: &str,
+    importing: bool,
 ) -> Markup {
-    let running = runs.iter().any(|r| r.status == "running");
+    let running = importing || runs.iter().any(|r| r.status == "running");
     let body = html! {
         h1 { "Imports" }
         div.panel {
@@ -358,17 +391,24 @@ pub fn imports(
             p.small.muted {
                 "Source: " code { (source_label) }
             }
-            form.inline method="post" action="/imports" {
-                label { "Import day " input type="date" name="day" value=(yesterday.to_string()); }
-                button type="submit" disabled[running] { "Run import" }
-                span.small.muted { "Re-importing a day is safe; existing rows are skipped." }
+            form.inline method="post" action="/imports" aria-label="Import logs by date range" {
+                label for="import-day" { "From day * (required)" }
+                input id="import-day" type="date" name="day" value=(yesterday.to_string()) required aria-required="true" aria-describedby="import-range-help";
+                label for="import-through" { "Through day (optional)" }
+                input id="import-through" type="date" name="through" aria-describedby="import-range-help";
+                sml-reactive-button.bunyan-reactive type="submit" disabled[running] aria-label="Run import" title="Run import" data-icon="bi bi-database-down" data-text="Run import" {}
+            }
+            p.small.muted id="import-range-help" { "Leave Through day blank for one day. Ranges include both dates and run one day at a time using your signed-in SQL credentials. Failed days are recorded and remaining days continue. Re-importing is safe; existing rows are skipped." }
+            @if running {
+                p.flash role="status" { "Import in progress. This page refreshes until all selected days finish. Stay signed in; signing out of the desktop app stops unfinished imports." }
             }
         }
         div.panel {
             h2 { "Recent runs" }
             @if runs.is_empty() { p.muted { "No imports yet." } } @else {
                 table {
-                    thead { tr { th { "Day" } th { "Trigger" } th { "Started" } th { "Finished" } th { "Status" } th.num { "Fetched" } th.num { "New" } th { "Error" } } }
+                    caption { "Recent import runs" }
+                    thead { tr { th scope="col" { "Day" } th scope="col" { "Trigger" } th scope="col" { "Started" } th scope="col" { "Finished" } th scope="col" { "Status" } th.num scope="col" { "Fetched" } th.num scope="col" { "New" } th scope="col" { "Error" } } }
                     tbody {
                         @for r in runs {
                             tr {
@@ -397,7 +437,7 @@ mod exception_tests {
     #[test]
     fn full_sample_and_occurrence_exceptions_are_expandable_and_escaped() {
         let exception = format!("<script>{}EXCEPTION_END", "frame\n".repeat(1000));
-        let view = GroupView {
+        let mut view = GroupView {
             g: crate::db::GroupDetail {
                 id: 1,
                 log_app: "DotNetCats".into(),
@@ -440,5 +480,19 @@ mod exception_tests {
         assert_eq!(markup.matches("EXCEPTION_END").count(), 2);
         assert!(!markup.contains("<script>"));
         assert_eq!(markup.matches("&lt;script&gt;").count(), 2);
+
+        view.g.template = "Failure '<str>'".into();
+        view.g.suggestion = Some("OUTDATED_ADVICE: Inspect '<str>'.".into());
+        let markup = group(&view).into_string();
+        assert!(markup.contains("This saved suggestion is outdated"));
+        assert!(markup.contains("data-text=\"Regenerate\""));
+        assert!(markup.contains("[quoted value]"));
+        assert!(!markup.contains("OUTDATED_ADVICE"));
+        assert!(!markup.contains("&lt;str&gt;"));
+
+        view.g.suggestion = Some("CURRENT_ADVICE: Inspect the original exception.".into());
+        let markup = group(&view).into_string();
+        assert!(markup.contains("CURRENT_ADVICE"));
+        assert!(!markup.contains("This saved suggestion is outdated"));
     }
 }

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Finder supplies no useful working directory or terminal. Keep startup failures visible in a native alert.
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+data="$HOME/Library/Application Support/Bunyan"
+if ! mkdir -p "$data"; then
+    /usr/bin/osascript -e 'display alert "Bunyan could not start" message "Cannot create the Bunyan application-data folder." as critical'
+    exit 1
+fi
+if "$here/bunyan-bin" "$@" >> "$data/launcher.log" 2>&1; then
+    exit 0
+else
+    /usr/bin/osascript -e 'display alert "Bunyan could not start" message "It may already be running. Check bunyan.log and launcher.log in ~/Library/Application Support/Bunyan for details." as critical'
+    exit 1
+fi

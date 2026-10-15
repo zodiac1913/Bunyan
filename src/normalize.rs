@@ -46,6 +46,23 @@ pub fn template(message: &str) -> String {
     }
 }
 
+/// Human-readable grouping labels only; stored templates and group fingerprints stay unchanged.
+pub fn display_template(template: &str) -> String {
+    [
+        ("<str>", "[quoted value]"),
+        ("<guid>", "[identifier]"),
+        ("<ts>", "[timestamp]"),
+        ("<date>", "[date]"),
+        ("<email>", "[email address]"),
+        ("<hex>", "[hex value]"),
+        ("<n>", "[number]"),
+    ]
+    .into_iter()
+    .fold(template.to_string(), |text, (token, label)| {
+        text.replace(token, label)
+    })
+}
+
 /// Best-effort .NET-style exception type from the first line of a stack dump,
 /// e.g. `System.Data.SqlClient.SqlException: Timeout expired` -> `System.Data.SqlClient.SqlException`.
 pub fn exception_type(exception: Option<&str>) -> Option<String> {
@@ -103,6 +120,22 @@ mod tests {
         );
         assert_eq!(a, b);
         assert_eq!(a, "Order <n> failed for user '<str>' at <ts> id <guid>");
+    }
+
+    #[test]
+    fn display_labels_do_not_change_stored_grouping() {
+        let original = "Incorrect syntax near the keyword 'RowCount'.";
+        let grouped = template(original);
+        assert_eq!(grouped, "Incorrect syntax near the keyword '<str>'.");
+        assert_eq!(
+            display_template(&grouped),
+            "Incorrect syntax near the keyword '[quoted value]'."
+        );
+        assert_eq!(template(original), grouped);
+        assert_eq!(
+            display_template("<guid> <ts> <date> <email> <hex> <n>"),
+            "[identifier] [timestamp] [date] [email address] [hex value] [number]"
+        );
     }
 
     #[test]
