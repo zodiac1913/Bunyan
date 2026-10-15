@@ -121,6 +121,10 @@ forces `ApplicationIntent=ReadOnly`; that flag is a routing hint, **not** a perm
 For database-enforced read-only access, an admin can optionally run
 [sql/readonly-login.sql](sql/readonly-login.sql) to create `bunyan_reader` with `SELECT` on
 `CORE.Log` only and explicit `DENY` on writes.
+Run that script in SQLCMD mode, supplying `BUNYAN_READER_PASSWORD` through the local
+environment, never a committed file or command-line argument. SQLCMD substitutes SQL
+text, so escape any single quote in the password as two single quotes in that variable.
+Rotate previously exposed credentials; removing them from Git does not revoke them.
 
 ## Source table settings
 

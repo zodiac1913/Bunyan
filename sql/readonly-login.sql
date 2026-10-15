@@ -1,5 +1,7 @@
 -- Read-only SQL Server login for Bunyan. Run as a sysadmin / securityadmin.
 -- Grants SELECT on CORE.Log only; nothing else in CATSDEV is readable.
+-- Run in SQLCMD mode with BUNYAN_READER_PASSWORD supplied through the environment.
+-- SQLCMD substitutes SQL text: escape any password single quote as two single quotes.
 
 USE [master];
 GO
