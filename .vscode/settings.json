@@ -1,4 +1,5 @@
 {
+    "lldb.cargo": "/Users/rxjr/.cargo/bin/cargo",
     "workbench.colorCustomizations": {
         "activityBar.activeBackground": "#e9d0af",
         "activityBar.activeBorder": "#15202b",

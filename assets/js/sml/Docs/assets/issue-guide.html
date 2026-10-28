@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en" data-smlc-issue-guide="1">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tzedek Issue Guide</title>
+    <link rel="stylesheet" href="./Tzedek.css" />
+    <style>
+      :root {
+        color-scheme: light;
+        --guide-bg: #f4efe6;
+        --guide-surface: #fffaf2;
+        --guide-ink: #1f2937;
+        --guide-muted: #5b6472;
+        --guide-line: #d9ceb8;
+        --guide-accent: #8a5a12;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+        color: var(--guide-ink);
+        background:
+          radial-gradient(circle at top left, rgba(138, 90, 18, 0.12), transparent 34%),
+          linear-gradient(180deg, #f8f3ea 0%, var(--guide-bg) 100%);
+      }
+
+      main {
+        width: min(960px, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: 2rem 0 3rem;
+      }
+
+      .guide-hero,
+      .guide-card {
+        background: var(--guide-surface);
+        border: 1px solid var(--guide-line);
+        border-radius: 1rem;
+        box-shadow: 0 1rem 2rem rgba(31, 41, 55, 0.08);
+      }
+
+      .guide-hero {
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+      }
+
+      .guide-kicker {
+        margin: 0 0 0.5rem;
+        font: 700 0.85rem/1.2 system-ui, sans-serif;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--guide-accent);
+      }
+
+      h1, h2 {
+        margin: 0 0 0.75rem;
+        line-height: 1.15;
+      }
+
+      h1 { font-size: clamp(2rem, 3vw, 3rem); }
+      h2 { font-size: 1.25rem; }
+
+      p, li {
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+
+      .guide-summary {
+        margin: 0;
+        color: var(--guide-muted);
+      }
+
+      .guide-actions {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin-top: 1rem;
+      }
+
+      .guide-grid {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .guide-card {
+        padding: 1.25rem;
+      }
+
+      .guide-card ul {
+        margin: 0;
+        padding-left: 1.25rem;
+      }
+
+      .guide-card p:last-child,
+      .guide-card ul:last-child,
+      .guide-card pre:last-child {
+        margin-bottom: 0;
+      }
+
+      .guide-note {
+        color: var(--guide-muted);
+        font-size: 0.95rem;
+      }
+
+      pre {
+        margin: 0.75rem 0 0;
+        padding: 0.9rem;
+        overflow: auto;
+        border-radius: 0.75rem;
+        background: #f3ead9;
+        border: 1px solid #ddccb1;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 0.92rem;
+      }
+
+      .guide-snippet + .guide-snippet {
+        margin-top: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="guide-hero">
+        <p class="guide-kicker">Tzedek Issue Guide</p>
+        <h1 id="guideTitle">Accessibility Finding</h1>
+        <p id="guideSummary" class="guide-summary"></p>
+        <div class="guide-actions" id="guideActions"></div>
+      </section>
+
+      <section class="guide-grid">
+        <article class="guide-card" id="detectedSection" hidden>
+          <h2>Detected Finding</h2>
+          <p id="detectedMessage"></p>
+        </article>
+
+        <article class="guide-card" id="overviewSection" hidden>
+          <h2>Overview</h2>
+          <p id="overviewText"></p>
+        </article>
+
+        <article class="guide-card" id="whySection" hidden>
+          <h2>Why It Matters</h2>
+          <ul id="whyList"></ul>
+        </article>
+
+        <article class="guide-card" id="reviewSection" hidden>
+          <h2>What To Check</h2>
+          <ul id="reviewList"></ul>
+        </article>
+
+        <article class="guide-card" id="fixSection" hidden>
+          <h2>Possible Fixes</h2>
+          <p id="fixDescription"></p>
+          <div id="fixSnippets"></div>
+        </article>
+
+        <article class="guide-card" id="emptySection" hidden>
+          <h2>Guide Status</h2>
+          <p>This finding does not have a richer local guide entry yet, but Tzedek can still show the current summary and any available generic fix patterns.</p>
+        </article>
+      </section>
+    </main>
+
+    <script type="module">
+      import { getComplianceFixContent, getMoreInfoUrl, getPlainLanguageIssueDescription } from "../smlCompliance.js";
+      import { getIssueGuideDetails } from "./tzedekIssueGuideData.js";
+
+      const params = new URLSearchParams(window.location.search);
+      const title = (params.get("title") || "").trim() || "Accessibility Finding";
+      const message = (params.get("message") || "").trim();
+      const summary = getPlainLanguageIssueDescription(title);
+      const fixContent = getComplianceFixContent(title, null);
+      const externalUrl = getMoreInfoUrl(title, message);
+      const guideDetails = getIssueGuideDetails(title);
+
+      document.title = `${title} | Tzedek Issue Guide`;
+      document.getElementById("guideTitle").textContent = title;
+      document.getElementById("guideSummary").textContent = summary || "Tzedek does not have a short summary for this finding yet.";
+
+      const actions = document.getElementById("guideActions");
+      if (externalUrl) {
+        const link = document.createElement("a");
+        link.className = "btn btn-primary";
+        link.href = externalUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Open Canonical Reference";
+        actions.appendChild(link);
+      }
+
+      const titleOnlyUrl = new URL(window.location.href);
+      titleOnlyUrl.search = new URLSearchParams({ title }).toString();
+      const resetLink = document.createElement("a");
+      resetLink.className = "btn btn-secondary";
+      resetLink.href = titleOnlyUrl.href;
+      resetLink.textContent = "Open Generic Guide View";
+      actions.appendChild(resetLink);
+
+      if (message) {
+        document.getElementById("detectedSection").hidden = false;
+        document.getElementById("detectedMessage").textContent = message;
+      }
+
+      if (guideDetails?.overview) {
+        document.getElementById("overviewSection").hidden = false;
+        document.getElementById("overviewText").textContent = guideDetails.overview;
+      }
+
+      if (Array.isArray(guideDetails?.whyItMatters) && guideDetails.whyItMatters.length > 0) {
+        document.getElementById("whySection").hidden = false;
+        const whyList = document.getElementById("whyList");
+        for (const item of guideDetails.whyItMatters) {
+          const li = document.createElement("li");
+          li.textContent = item;
+          whyList.appendChild(li);
+        }
+      }
+
+      if (Array.isArray(guideDetails?.reviewChecklist) && guideDetails.reviewChecklist.length > 0) {
+        document.getElementById("reviewSection").hidden = false;
+        const reviewList = document.getElementById("reviewList");
+        for (const item of guideDetails.reviewChecklist) {
+          const li = document.createElement("li");
+          li.textContent = item;
+          reviewList.appendChild(li);
+        }
+      }
+
+      if (fixContent) {
+        document.getElementById("fixSection").hidden = false;
+        document.getElementById("fixDescription").textContent = fixContent.description || "";
+        const fixSnippets = document.getElementById("fixSnippets");
+        for (const snippet of fixContent.snippets || []) {
+          const wrapper = document.createElement("div");
+          wrapper.className = "guide-snippet";
+
+          const heading = document.createElement("p");
+          heading.className = "guide-note";
+          heading.textContent = snippet.heading;
+
+          const pre = document.createElement("pre");
+          const code = document.createElement("code");
+          code.textContent = snippet.code;
+          pre.appendChild(code);
+
+          wrapper.appendChild(heading);
+          wrapper.appendChild(pre);
+          fixSnippets.appendChild(wrapper);
+        }
+      }
+
+      if (!guideDetails && !fixContent) {
+        document.getElementById("emptySection").hidden = false;
+      }
+    </script>
+  </body>
+</html>
