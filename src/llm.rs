@@ -67,11 +67,17 @@ fn truncate(s: &str, max: usize) -> &str {
     }
 }
 
+/// Shared by one-shot suggestions and AI Chat so both avoid speculating about data they cannot see.
+pub(crate) const EVIDENCE_RULES: &str = "You have no database access and cannot see row values, column contents, or schemas beyond what is quoted below. \
+Columns named *Identifier (e.g. LogIdentifier) are bigint keys: never suggest they are non-numeric, mistyped, or malformed unless the supplied text proves it. \
+Separate what the evidence shows from hypotheses; label every hypothesis as such and give the specific query, log line, or code to check it. \
+Do not present guesses about data, schema, or deployed code as the root cause.";
+
 pub(crate) fn build_prompt(g: &GroupDetail, snippets: &[Snippet]) -> String {
     let mut p = String::from(
         "You are a senior .NET/SQL Server engineer triaging production logs.\n\
          Given the recurring log entry below, respond concisely with:\n\
-         1. Likely root cause\n2. Concrete fix (code or configuration), with a short code sample if useful\n\
+         1. Root cause (only what the evidence supports; otherwise \"Not determined\" plus the leading hypotheses and how to confirm each)\n2. Concrete fix (code or configuration), with a short code sample if useful\n\
          3. How to verify the fix\n\
          If the information is insufficient, say what additional data would help. Do not invent class names.\n\
          Quote the original sample message/exception when diagnosing errors; preserve the actual SQL keyword or identifier.\n\
@@ -80,8 +86,10 @@ pub(crate) fn build_prompt(g: &GroupDetail, snippets: &[Snippet]) -> String {
          You have read-only context: only the supplied source excerpts, not filesystem or tool access.\n\
          Propose fixes for a developer to review; do not modify files, execute commands, or claim to do so.\n\
          Cite supplied relative source paths and line numbers for code fixes. Source matches are candidates, not proof;\n\
-         do not assume the checkout matches the deployed version. Do not claim code was changed or tested.\n\n",
+         do not assume the checkout matches the deployed version. Do not claim code was changed or tested.\n",
     );
+    p += EVIDENCE_RULES;
+    p += "\n\n";
     p += &format!("Application: {}\nLog type: {}\n", g.log_app, g.log_type);
     if let Some(c) = &g.class_name {
         p += &format!("Class: {c}\n");
@@ -160,6 +168,8 @@ mod tests {
         assert!(prompt.contains("untrusted evidence"));
         assert!(prompt.contains("read-only context"));
         assert!(prompt.contains("not filesystem or tool access"));
+        assert!(prompt.contains("no database access"));
+        assert!(prompt.contains("*Identifier"));
         assert!(prompt.contains("do not modify files, execute commands"));
         assert!(!prompt.contains("No matching source context"));
     }

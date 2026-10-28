@@ -329,6 +329,13 @@ impl Filter {
         if include_level {
             match self.level.as_str() {
                 "all" | "" => {}
+                // Same definition as the dashboard's "Errors & critical" card.
+                "errors" => {
+                    let level = format!("lower({})", level_sql("e.log_type", "e.message"));
+                    sql += &format!(
+                        " AND ({level} LIKE '%crit%' OR {level} LIKE '%fatal%' OR {level} LIKE '%err%')"
+                    );
+                }
                 "issues" => {
                     let list = INFORMATIONAL_TYPES
                         .iter()
@@ -446,8 +453,23 @@ pub fn top_groups(
     f: &Filter,
     limit: i64,
 ) -> Result<Vec<GroupRow>> {
+    kind_groups(conn, start, end, f, false, limit)
+}
+
+/// Like [`top_groups`]; `new_only` keeps groups whose first occurrence ever is in `[start, end)`.
+pub fn kind_groups(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+    f: &Filter,
+    new_only: bool,
+    limit: i64,
+) -> Result<Vec<GroupRow>> {
     let mut p = range_params(start, end);
-    let filter = f.sql(&mut p, true);
+    let mut filter = f.sql(&mut p, true);
+    if new_only {
+        filter += " AND substr(g.first_seen,1,10) >= ?1 AND substr(g.first_seen,1,10) < ?2";
+    }
     p.push(limit.to_string());
     let level = level_sql("g.log_type", "g.sample_message");
     let sql = format!(
@@ -641,14 +663,90 @@ pub struct EntryRow {
     pub message: String,
     pub exception: Option<String>,
     pub server: Option<String>,
-    pub project_name: Option<String>,
+    pub class_name: Option<String>,
+    pub method_name: Option<String>,
     pub task_definition_title: Option<String>,
     pub add_user_name: Option<String>,
 }
 
+pub struct RangeEntry {
+    pub log_identifier: i64,
+    pub add_timestamp: String,
+    pub log_type: String,
+    pub log_severity: i64,
+    pub group_id: i64,
+    pub message: String,
+    pub server: Option<String>,
+    pub class_name: Option<String>,
+    pub method_name: Option<String>,
+    pub task_definition_title: Option<String>,
+    pub add_user_name: Option<String>,
+    /// Trimmed exception length; the exception text itself is fetched on demand.
+    pub exception_len: i64,
+}
+
+/// One page of entries in `[start, end)` (newest first) plus the total matching count.
+pub fn entries_in_range(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+    f: &Filter,
+    severity: Option<i64>,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<RangeEntry>, i64)> {
+    let mut p = range_params(start, end);
+    let mut filter = f.sql(&mut p, true);
+    if let Some(n) = severity {
+        filter += &format!(" AND e.log_severity = {n}");
+    }
+    let total: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM log_entries e WHERE e.day >= ?1 AND e.day < ?2 {filter}"),
+        params_from_iter(p.iter()),
+        |r| r.get(0),
+    )?;
+    let sql = format!(
+        "SELECT e.log_identifier, e.add_timestamp, {}, e.log_severity, e.group_id, e.message,
+                e.server, e.class_name, e.method_name, e.task_definition_title, e.add_user_name,
+                length(trim(coalesce(e.exception, '')))
+         FROM log_entries e WHERE e.day >= ?1 AND e.day < ?2 {filter}
+         ORDER BY e.add_timestamp DESC, e.log_identifier DESC LIMIT {limit} OFFSET {offset}",
+        level_sql("e.log_type", "e.message")
+    );
+    let mut st = conn.prepare(&sql)?;
+    let rows = st.query_map(params_from_iter(p), |r| {
+        Ok(RangeEntry {
+            log_identifier: r.get(0)?,
+            add_timestamp: r.get(1)?,
+            log_type: canonical_level(&r.get::<_, String>(2)?).to_string(),
+            log_severity: r.get(3)?,
+            group_id: r.get(4)?,
+            message: r.get(5)?,
+            server: r.get(6)?,
+            class_name: r.get(7)?,
+            method_name: r.get(8)?,
+            task_definition_title: r.get(9)?,
+            add_user_name: r.get(10)?,
+            exception_len: r.get(11)?,
+        })
+    })?;
+    Ok((rows.collect::<Result<_, _>>()?, total))
+}
+
+pub fn entry_exception(conn: &Connection, log_identifier: i64) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT exception FROM log_entries WHERE log_identifier = ?1",
+            [log_identifier],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 pub fn group_entries(conn: &Connection, id: i64, limit: i64) -> Result<Vec<EntryRow>> {
     let mut st = conn.prepare(
-        "SELECT log_identifier, add_timestamp, log_severity, message, server, project_name, task_definition_title, add_user_name, exception
+        "SELECT log_identifier, add_timestamp, log_severity, message, server, class_name, method_name, task_definition_title, add_user_name, exception
          FROM log_entries WHERE group_id = ?1 ORDER BY add_timestamp DESC LIMIT ?2",
     )?;
     let rows = st.query_map(params![id, limit], |r| {
@@ -658,10 +756,11 @@ pub fn group_entries(conn: &Connection, id: i64, limit: i64) -> Result<Vec<Entry
             log_severity: r.get(2)?,
             message: r.get(3)?,
             server: r.get(4)?,
-            project_name: r.get(5)?,
-            task_definition_title: r.get(6)?,
-            add_user_name: r.get(7)?,
-            exception: r.get(8)?,
+            class_name: r.get(5)?,
+            method_name: r.get(6)?,
+            task_definition_title: r.get(7)?,
+            add_user_name: r.get(8)?,
+            exception: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -729,6 +828,76 @@ mod tests {
             add_user_name: None,
             add_timestamp: NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S").unwrap(),
         }
+    }
+
+    #[test]
+    fn entry_lists_match_dashboard_counts_for_each_level_scope_and_severity() {
+        let mut c = open(std::path::Path::new(":memory:")).unwrap();
+        let mut critical = row(3, "Meltdown", "2026-10-13 09:00:00");
+        critical.log_type = "Critical".into();
+        let mut info = row(2, "Hello", "2026-10-13 08:30:00");
+        info.log_type = "Information".into();
+        info.log_severity = 1;
+        ingest(
+            &mut c,
+            &[row(1, "Boom", "2026-10-13 08:00:00"), info, critical],
+        )
+        .unwrap();
+        let (start, end): (NaiveDate, NaiveDate) =
+            ("2026-10-13".parse().unwrap(), "2026-10-14".parse().unwrap());
+        let list = |level: &str, severity| {
+            let f = Filter {
+                app: None,
+                level: level.into(),
+            };
+            let (rows, total) = entries_in_range(&c, start, end, &f, severity, 10, 0).unwrap();
+            (
+                rows.iter().map(|r| r.log_identifier).collect::<Vec<_>>(),
+                total,
+            )
+        };
+        assert_eq!(list("all", None), (vec![3, 2, 1], 3));
+        assert_eq!(list("issues", None), (vec![3, 1], 2));
+        assert_eq!(list("errors", None), (vec![3, 1], 2));
+        assert_eq!(list("Critical", None), (vec![3], 1));
+        assert_eq!(list("all", Some(1)), (vec![2], 1));
+        let f = Filter {
+            app: None,
+            level: "all".into(),
+        };
+        let (all, _) = entries_in_range(&c, start, end, &f, None, 10, 0).unwrap();
+        let len = |id| {
+            all.iter()
+                .find(|r| r.log_identifier == id)
+                .unwrap()
+                .exception_len
+        };
+        assert_eq!(len(1), "System.TimeoutException: boom".len() as i64);
+        assert!(entry_exception(&c, 1).unwrap().unwrap().contains("boom"));
+        assert_eq!(entry_exception(&c, 404).unwrap(), None);
+        let (page, total) = entries_in_range(&c, start, end, &f, None, 2, 2).unwrap();
+        assert_eq!((page.len(), total), (1, 3));
+
+        let issues = Filter {
+            app: None,
+            level: "issues".into(),
+        };
+        let kinds = kind_groups(&c, start, end, &issues, false, 10).unwrap();
+        assert_eq!(
+            kinds.len() as i64,
+            distinct_group_count(&c, start, end, &issues).unwrap()
+        );
+        let new = kind_groups(&c, start, end, &issues, true, 10).unwrap();
+        assert_eq!(
+            new.len() as i64,
+            new_group_count(&c, start, end, &issues).unwrap()
+        );
+        let later: NaiveDate = "2026-10-15".parse().unwrap();
+        assert!(
+            kind_groups(&c, end, later, &issues, true, 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

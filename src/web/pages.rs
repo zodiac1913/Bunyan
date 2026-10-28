@@ -1,7 +1,9 @@
 //! HTML views. Pure functions from view models to `maud::Markup`; no data access here.
 
 use super::charts::{self, fmt_num};
-use super::{Dash, GroupView, enc, style, type_color};
+use super::{
+    Dash, EntriesView, GroupView, KindsView, enc, list_params as list_query, style, type_color,
+};
 use crate::config::Config;
 use crate::db::ImportRun;
 use crate::periods::Period;
@@ -99,11 +101,11 @@ fn delta(cur: i64, prev: i64) -> Markup {
     html! { span class=(class) title=(format!("previous period: {}", fmt_num(prev))) { (arrow) " " (format!("{:.0}%", pct.abs())) } }
 }
 
-fn card(label: &str, value: i64, prev: Option<i64>) -> Markup {
+fn card(label: &str, value: i64, prev: Option<i64>, href: &str) -> Markup {
     html! {
         div.card {
             div.k { (label) }
-            div.v { (fmt_num(value)) }
+            div.v { a.count-link href=(href) { (fmt_num(value)) } }
             @if let Some(p) = prev { (delta(value, p)) " vs previous" }
         }
     }
@@ -113,6 +115,7 @@ fn level_label(level: &str) -> String {
     match level {
         "issues" => "Issues (non-informational)".into(),
         "all" => "All levels".into(),
+        "errors" => "Errors & critical".into(),
         other => other.into(),
     }
 }
@@ -158,16 +161,16 @@ pub fn dashboard(d: &Dash) -> Markup {
             p.small.muted { "In progress: changes compare the first " (n) " day(s) with the same span of the previous " (period_name) "." }
         }
         div.cards {
-            (card("Total entries", d.total, Some(d.prev_total)))
-            (card("Issues (non-info)", d.issues, Some(d.prev_issues)))
-            (card("Errors & critical", d.errors, Some(d.prev_errors)))
-            (card("Distinct kinds", d.distinct_groups, None))
-            (card("New kinds", d.new_groups, None))
+            (card("Total entries", d.total, Some(d.prev_total), &d.entries_url("all", None)))
+            (card("Issues (non-info)", d.issues, Some(d.prev_issues), &d.entries_url("issues", None)))
+            (card("Errors & critical", d.errors, Some(d.prev_errors), &d.entries_url("errors", None)))
+            (card("Distinct kinds", d.distinct_groups, None, &d.kinds_url(false)))
+            (card("New kinds", d.new_groups, None, &d.kinds_url(true)))
         }
         div.grid2 {
             div.panel {
                 h2 { "By log level" }
-                (charts::hbars(&d.by_type.iter().map(|(t, c)| (t.clone(), *c, type_color(t))).collect::<Vec<_>>()))
+                (charts::hbars(&d.by_type.iter().map(|(t, c)| (t.clone(), *c, type_color(t), Some(d.entries_url(t, None)))).collect::<Vec<_>>()))
             }
             div.panel {
                 h2 { "By severity" }
@@ -208,9 +211,13 @@ fn severity_table(d: &Dash) -> Markup {
                     tr {
                         th.severity-row scope="row" { (s) }
                         @for t in &d.sev_types {
-                            td.num { (d.sev_counts.get(&(*s, t.clone())).map(|c| fmt_num(*c)).unwrap_or_default()) }
+                            td.num {
+                                @if let Some(c) = d.sev_counts.get(&(*s, t.clone())) {
+                                    a.count-link href=(d.entries_url(t, Some(*s))) { (fmt_num(*c)) }
+                                }
+                            }
                         }
-                        td.num { strong { (fmt_num(d.sev_types.iter().map(|t| d.sev_counts.get(&(*s, t.clone())).unwrap_or(&0)).sum())) } }
+                        td.num { strong { a.count-link href=(d.entries_url("all", Some(*s))) { (fmt_num(d.sev_types.iter().map(|t| d.sev_counts.get(&(*s, t.clone())).unwrap_or(&0)).sum())) } } }
                     }
                 }
             }
@@ -219,20 +226,30 @@ fn severity_table(d: &Dash) -> Markup {
 }
 
 fn top_table(d: &Dash) -> Markup {
-    if d.top.is_empty() {
+    kinds_table(&d.top, &d.prev_counts, d.start, d.end, &d.filter.level)
+}
+
+fn kinds_table(
+    groups: &[crate::db::GroupRow],
+    prev_counts: &std::collections::HashMap<i64, i64>,
+    start: NaiveDate,
+    end: NaiveDate,
+    level: &str,
+) -> Markup {
+    if groups.is_empty() {
         return html! { p.muted { "Nothing logged for this filter and range." } };
     }
-    let (start, end) = (d.start.to_string(), d.end.to_string());
+    let (start, end) = (start.to_string(), end.to_string());
     html! {
         table {
-            caption { "Top kinds — " (level_label(&d.filter.level)) }
+            caption { "Top kinds — " (level_label(level)) }
             thead { tr {
                 th scope="col" { "Kind" } th scope="col" { "App" } th scope="col" { "Level" } th scope="col" { "Where" } th.num scope="col" { "Max sev" }
                 th.num scope="col" { "Count" } th.num scope="col" { "Prev" } th.num scope="col" { "Change" } th scope="col" { "Fix" }
             } }
             tbody {
-                @for g in &d.top {
-                    @let prev = *d.prev_counts.get(&g.id).unwrap_or(&0);
+                @for g in groups {
+                    @let prev = *prev_counts.get(&g.id).unwrap_or(&0);
                     @let first_day = g.first_seen.get(..10).unwrap_or("");
                     tr {
                         td {
@@ -257,6 +274,98 @@ fn top_table(d: &Dash) -> Markup {
             }
         }
     }
+}
+
+pub fn kinds(v: &KindsView) -> Markup {
+    let title = if v.new_only {
+        "New kinds"
+    } else {
+        "Distinct kinds"
+    };
+    let body = html! {
+        p { a href=(format!("/?{}", list_query(v.period, v.anchor, v.filter.app.as_deref(), &v.filter.level))) { "← Dashboard" } }
+        h1 { (title) " — " (v.period.label(v.anchor)) }
+        p.small.muted {
+            (level_label(&v.filter.level)) ", " (v.filter.app.as_deref().unwrap_or("all apps")) ". "
+            (fmt_num(v.groups.len() as i64)) " kind(s), most frequent first."
+        }
+        div.panel { (kinds_table(&v.groups, &v.prev_counts, v.start, v.end, &v.filter.level)) }
+    };
+    layout(title, "dash", None, body)
+}
+
+/// Exceptions this short or shorter carry nothing worth a modal, so their button stays disabled.
+const EXCEPTION_MIN_CHARS: i64 = 20;
+
+pub fn entries(v: &EntriesView) -> Markup {
+    let per = EntriesView::per_page();
+    let first = v.page * per;
+    let last = first + v.entries.len() as i64;
+    let sev = v
+        .severity
+        .map(|s| format!(", severity {s}"))
+        .unwrap_or_default();
+    let body = html! {
+        p { a href=(v.dashboard_url()) { "← Dashboard" } }
+        h1 { "Log entries — " (v.period.label(v.anchor)) }
+        p.small.muted {
+            (level_label(&v.filter.level)) (sev) ", " (v.filter.app.as_deref().unwrap_or("all apps")) ". "
+            @if v.total == 0 { "No entries." } @else {
+                "Showing " (fmt_num(first + 1)) "–" (fmt_num(last)) " of " (fmt_num(v.total)) ", newest first."
+            }
+        }
+        div.panel {
+            @if v.entries.is_empty() {
+                p.muted { "Nothing logged for this filter and range." }
+            } @else {
+                table {
+                    caption { "Log entries" }
+                    thead { tr {
+                        th scope="col" { "LogIdentifier" } th scope="col" { "Time" } th scope="col" { "Level" } th.num scope="col" { "Sev" }
+                        th scope="col" { "Server" } th scope="col" { "Controller" } th scope="col" { "Action" }
+                        th scope="col" { "Task" } th scope="col" { "User" } th scope="col" { "Message" } th scope="col" { "Exception" }
+                    } }
+                    tbody {
+                        @for e in &v.entries {
+                            tr {
+                                td.small { (e.log_identifier) }
+                                td.small { (e.add_timestamp) }
+                                td { (type_badge(&e.log_type)) }
+                                td.num { (e.log_severity) }
+                                td.small { (e.server.as_deref().unwrap_or("")) }
+                                td.small { (e.class_name.as_deref().unwrap_or("")) }
+                                td.small { (e.method_name.as_deref().unwrap_or("")) }
+                                td.small { (e.task_definition_title.as_deref().unwrap_or("")) }
+                                td.small { (e.add_user_name.as_deref().unwrap_or("")) }
+                                td.small { a href=(format!("/groups/{}", e.group_id)) { (truncate(&e.message, 200)) } }
+                                td {
+                                    @let has_exception = e.exception_len > EXCEPTION_MIN_CHARS;
+                                    button.exception-btn type="button" disabled[!has_exception]
+                                        data-exception-url=[has_exception.then(|| format!("/entries/{}/exception", e.log_identifier))]
+                                        data-log-identifier=(e.log_identifier)
+                                        aria-label=(format!("Show exception for log entry {}", e.log_identifier)) { "Exception" }
+                                }
+                            }
+                        }
+                    }
+                }
+                dialog id="exception-dialog" aria-labelledby="exception-title" {
+                    h2 id="exception-title" { "Exception" }
+                    p.small.muted id="exception-meta" {}
+                    pre id="exception-text" {}
+                    form method="dialog" { button type="submit" { "Close" } }
+                }
+                script src="/assets/entry-exceptions.js" defer {}
+                div.toolbar {
+                    div.nav {
+                        @if v.page > 0 { a href=(v.page_url(v.page - 1)) { "◀ Newer" } }
+                        @if last < v.total { a href=(v.page_url(v.page + 1)) { "Older ▶" } }
+                    }
+                }
+            }
+        }
+    };
+    layout("Log entries", "dash", None, body)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -335,7 +444,7 @@ pub fn group(v: &GroupView) -> Markup {
         div.panel {
             h2 { "Recent occurrences" }
             table {
-                thead { tr { th { "LogIdentifier" } th { "Time" } th.num { "Sev" } th { "Server" } th { "Project" } th { "Task" } th { "User" } th { "Message" } } }
+                thead { tr { th { "LogIdentifier" } th { "Time" } th.num { "Sev" } th { "Server" } th { "Controller" } th { "Action" } th { "Task" } th { "User" } th { "Message" } } }
                 tbody {
                     @for e in &v.entries {
                         tr {
@@ -343,7 +452,8 @@ pub fn group(v: &GroupView) -> Markup {
                             td.small { (e.add_timestamp) }
                             td.num { (e.log_severity) }
                             td.small { (e.server.as_deref().unwrap_or("")) }
-                            td.small { (e.project_name.as_deref().unwrap_or("")) }
+                            td.small { (e.class_name.as_deref().unwrap_or("")) }
+                            td.small { (e.method_name.as_deref().unwrap_or("")) }
                             td.small { (e.task_definition_title.as_deref().unwrap_or("")) }
                             td.small { (e.add_user_name.as_deref().unwrap_or("")) }
                             td.small {
@@ -465,7 +575,8 @@ mod exception_tests {
                 message: "Failure".into(),
                 exception: Some(exception),
                 server: None,
-                project_name: None,
+                class_name: None,
+                method_name: None,
                 task_definition_title: None,
                 add_user_name: None,
             }],

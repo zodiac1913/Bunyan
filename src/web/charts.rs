@@ -50,7 +50,8 @@ pub fn legend(series: &[Series]) -> Markup {
 }
 
 /// Horizontal bars: `(label, value, color)`.
-pub fn hbars(rows: &[(String, i64, String)]) -> Markup {
+/// Rows are `(label, value, color, optional link for the value)`.
+pub fn hbars(rows: &[(String, i64, String, Option<String>)]) -> Markup {
     if rows.is_empty() {
         return html! { p.muted { "No data." } };
     }
@@ -60,14 +61,20 @@ pub fn hbars(rows: &[(String, i64, String)]) -> Markup {
     let bar_w = w - label_w - value_w;
     html! {
         svg.chart viewBox=(format!("0 0 {w} {h}")) role="img" {
-            @for (i, (label, v, color)) in rows.iter().enumerate() {
+            @for (i, (label, v, color, href)) in rows.iter().enumerate() {
                 @let y = i as f64 * row_h + 2.0;
                 @let bw = (*v as f64 / max * bar_w).max(1.0);
                 text x=(label_w - 8.0) y=(y + row_h / 2.0 + 4.0) text-anchor="end" class="axis" { (label) }
                 rect x=(label_w) y=(y + 3.0) width=(bw) height=(row_h - 8.0) rx="3" fill=(color) {
                     title { (label) ": " (fmt_num(*v)) }
                 }
-                text x=(label_w + bw + 6.0) y=(y + row_h / 2.0 + 4.0) class="value" { (fmt_num(*v)) }
+                @if let Some(href) = href {
+                    a href=(href) {
+                        text x=(label_w + bw + 6.0) y=(y + row_h / 2.0 + 4.0) class="value linked" { (fmt_num(*v)) }
+                    }
+                } @else {
+                    text x=(label_w + bw + 6.0) y=(y + row_h / 2.0 + 4.0) class="value" { (fmt_num(*v)) }
+                }
             }
         }
     }

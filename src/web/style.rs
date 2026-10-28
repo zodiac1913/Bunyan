@@ -35,6 +35,13 @@ button { background:var(--accent); color:#fff; border-color:var(--accent); curso
 .bunyan-reactive { display:inline-block; font:inherit; padding:5px 8px; border:1px solid var(--accent); border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; }
 .bunyan-reactive:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .bunyan-reactive[disabled] { cursor:not-allowed; }
+.exception-btn { padding:2px 10px; font-size:12px; cursor:pointer; }
+.exception-btn:disabled { cursor:not-allowed; opacity:.5; }
+#exception-dialog { width:min(900px, 92vw); max-height:85vh; border:1px solid var(--line); border-radius:10px; padding:16px; }
+#exception-dialog pre { max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+.count-link { color:inherit; text-decoration:underline dotted; }
+.count-link:hover, .count-link:focus-visible { text-decoration:underline; }
+.chart a:hover text.linked { text-decoration:underline; fill:var(--ink); }
 .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:12px; margin-bottom:16px; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
 .card .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.4px; }

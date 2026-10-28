@@ -117,6 +117,10 @@ fn router(state: AppState) -> Router {
         )
         .route("/logout", post(auth::logout))
         .route("/", get(dashboard))
+        .route("/entries", get(entries_page))
+        .route("/kinds", get(kinds_page))
+        .route("/entries/{id}/exception", get(entry_exception))
+        .route("/assets/entry-exceptions.js", get(entry_exceptions_script))
         .route("/assets/bunyan.jpeg", get(background_image))
         .route("/assets/css/{*path}", get(assets::serve))
         .route("/assets/js/{*path}", get(assets::serve))
@@ -233,7 +237,64 @@ mod browser_tests {
         assert_eq!(table.matches("<th ").count(), 6);
         assert!(table.contains("scope=\"row\">1</th>"));
         assert!(table.contains("scope=\"row\">2</th>"));
-        assert!(table.contains("<td class=\"num\">7</td>"));
+        assert!(table.contains(
+            "<td class=\"num\"><a class=\"count-link\" href=\"/entries?period=day&amp;date="
+        ));
+        assert!(table.contains("&amp;level=Warning&amp;severity=1\">7</a></td>"));
+    }
+
+    #[test]
+    fn dashboard_numbers_link_to_entry_and_kind_lists() {
+        let conn = db::open(std::path::Path::new(":memory:")).unwrap();
+        let dash = build_dash(&conn, DashQuery::default()).unwrap();
+        let markup = pages::dashboard(&dash).into_string();
+        for level in ["all", "issues", "errors"] {
+            assert!(markup.contains(&format!("&amp;level={level}\">0</a>")));
+        }
+        assert!(markup.contains("/kinds?period=day"));
+        assert!(markup.contains("&amp;new=1\">0</a>"));
+        let entries = build_entries(&conn, DashQuery::default()).unwrap();
+        assert!(
+            pages::entries(&entries)
+                .into_string()
+                .contains("Log entries")
+        );
+        let kinds = build_kinds(
+            &conn,
+            DashQuery {
+                new: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(pages::kinds(&kinds).into_string().contains("New kinds"));
+    }
+
+    #[test]
+    fn exception_button_is_enabled_only_for_long_exceptions() {
+        let conn = db::open(std::path::Path::new(":memory:")).unwrap();
+        let mut view = build_entries(&conn, DashQuery::default()).unwrap();
+        for (id, len) in [(1, 21), (2, 20), (3, 0)] {
+            view.entries.push(db::RangeEntry {
+                log_identifier: id,
+                add_timestamp: "2026-10-13 08:00:00".into(),
+                log_type: "Error".into(),
+                log_severity: 3,
+                group_id: 1,
+                message: "m".into(),
+                server: None,
+                class_name: None,
+                method_name: None,
+                task_definition_title: None,
+                add_user_name: None,
+                exception_len: len,
+            });
+        }
+        let html = pages::entries(&view).into_string();
+        assert!(html.contains("data-exception-url=\"/entries/1/exception\""));
+        assert_eq!(html.matches("type=\"button\" disabled").count(), 2);
+        assert!(!html.contains("/entries/2/exception"));
+        assert!(html.contains("<dialog id=\"exception-dialog\""));
     }
 
     #[test]
@@ -519,6 +580,10 @@ pub struct DashQuery {
     date: Option<String>,
     app: Option<String>,
     level: Option<String>,
+    // List-page only: exact severity, new kinds only (1), zero-based entries page.
+    severity: Option<i64>,
+    new: Option<u8>,
+    page: Option<i64>,
 }
 
 pub struct Dash {
@@ -564,6 +629,37 @@ impl Dash {
         u += &format!("&app={}", enc(self.filter.app.as_deref().unwrap_or("")));
         u
     }
+
+    fn list_params(&self, level: &str) -> String {
+        list_params(self.period, self.anchor, self.filter.app.as_deref(), level)
+    }
+
+    /// Entries page for this period; `level` is `all`, `issues`, `errors`, or an exact log type.
+    pub fn entries_url(&self, level: &str, severity: Option<i64>) -> String {
+        let mut u = format!("/entries?{}", self.list_params(level));
+        if let Some(s) = severity {
+            u += &format!("&severity={s}");
+        }
+        u
+    }
+
+    /// Kinds page for this period using the dashboard's current level filter.
+    pub fn kinds_url(&self, new_only: bool) -> String {
+        let mut u = format!("/kinds?{}", self.list_params(&self.filter.level));
+        if new_only {
+            u += "&new=1";
+        }
+        u
+    }
+}
+
+fn list_params(period: Period, anchor: NaiveDate, app: Option<&str>, level: &str) -> String {
+    format!(
+        "period={}&date={anchor}&app={}&level={}",
+        period.as_str(),
+        enc(app.unwrap_or("")),
+        enc(level)
+    )
 }
 
 fn series_from(
@@ -581,7 +677,18 @@ fn series_from(
         .collect()
 }
 
-fn build_dash(conn: &Connection, q: DashQuery) -> Result<Dash> {
+struct Window {
+    period: Period,
+    anchor: NaiveDate,
+    filter: Filter,
+    start: NaiveDate,
+    end: NaiveDate,
+    partial_days: Option<i64>,
+    pstart: NaiveDate,
+    pend: NaiveDate,
+}
+
+fn window(conn: &Connection, q: &DashQuery) -> Result<Window> {
     let period = Period::parse(q.period.as_deref().unwrap_or("day"));
     let anchor = match q.date.as_deref().and_then(|d| d.parse().ok()) {
         Some(d) => d,
@@ -590,11 +697,13 @@ fn build_dash(conn: &Connection, q: DashQuery) -> Result<Dash> {
     let filter = Filter {
         app: q
             .app
+            .clone()
             .or_else(|| Some("DotNetCats".into()))
             .filter(|a| !a.is_empty())
             .map(|a| db::canonical_app(&a).to_string()),
         level: q
             .level
+            .clone()
             .filter(|l| !l.is_empty())
             .map(|l| db::canonical_level(&l).to_string())
             .unwrap_or_else(|| "issues".into()),
@@ -612,6 +721,29 @@ fn build_dash(conn: &Connection, q: DashQuery) -> Result<Dash> {
         Some(n) => period.next_start(pstart).min(pstart + Duration::days(n)),
         None => period.next_start(pstart),
     };
+    Ok(Window {
+        period,
+        anchor,
+        filter,
+        start,
+        end,
+        partial_days,
+        pstart,
+        pend,
+    })
+}
+
+fn build_dash(conn: &Connection, q: DashQuery) -> Result<Dash> {
+    let Window {
+        period,
+        anchor,
+        filter,
+        start,
+        end,
+        partial_days,
+        pstart,
+        pend,
+    } = window(conn, &q)?;
 
     let mut by_type = db::counts_by_type(conn, start, end, &filter)?;
     by_type.sort_by(|a, b| type_rank(&a.0).cmp(&type_rank(&b.0)).then(b.1.cmp(&a.1)));
@@ -734,6 +866,142 @@ async fn dashboard(
 ) -> Result<Response, AppError> {
     let dash = with_db(&st, move |c| build_dash(c, q)).await?;
     Ok(pages::dashboard(&dash).into_response())
+}
+
+// ---------- entry and kind lists behind the dashboard numbers ----------
+
+const ENTRIES_PER_PAGE: i64 = 200;
+const KINDS_LIMIT: i64 = 1000;
+
+pub struct EntriesView {
+    pub period: Period,
+    pub anchor: NaiveDate,
+    pub filter: Filter,
+    pub severity: Option<i64>,
+    pub entries: Vec<db::RangeEntry>,
+    pub total: i64,
+    pub page: i64,
+}
+
+impl EntriesView {
+    pub fn page_url(&self, page: i64) -> String {
+        let mut u = format!(
+            "/entries?{}",
+            list_params(
+                self.period,
+                self.anchor,
+                self.filter.app.as_deref(),
+                &self.filter.level
+            )
+        );
+        if let Some(s) = self.severity {
+            u += &format!("&severity={s}");
+        }
+        u + &format!("&page={page}")
+    }
+
+    pub fn dashboard_url(&self) -> String {
+        format!(
+            "/?{}",
+            list_params(
+                self.period,
+                self.anchor,
+                self.filter.app.as_deref(),
+                "issues"
+            )
+        )
+    }
+
+    pub fn per_page() -> i64 {
+        ENTRIES_PER_PAGE
+    }
+}
+
+fn build_entries(conn: &Connection, q: DashQuery) -> Result<EntriesView> {
+    let w = window(conn, &q)?;
+    let page = q.page.unwrap_or(0).max(0);
+    let (entries, total) = db::entries_in_range(
+        conn,
+        w.start,
+        w.end,
+        &w.filter,
+        q.severity,
+        ENTRIES_PER_PAGE,
+        page * ENTRIES_PER_PAGE,
+    )?;
+    Ok(EntriesView {
+        period: w.period,
+        anchor: w.anchor,
+        filter: w.filter,
+        severity: q.severity,
+        entries,
+        total,
+        page,
+    })
+}
+
+async fn entries_page(
+    Extension(st): Extension<AppState>,
+    Query(q): Query<DashQuery>,
+) -> Result<Response, AppError> {
+    let view = with_db(&st, move |c| build_entries(c, q)).await?;
+    Ok(pages::entries(&view).into_response())
+}
+
+/// Exceptions can be large, so the entries page loads one only when its button is clicked.
+async fn entry_exception(
+    Extension(st): Extension<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let text = with_db(&st, move |c| db::entry_exception(c, id)).await?;
+    Ok(match text.filter(|t| !t.trim().is_empty()) {
+        Some(t) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], t).into_response(),
+        None => (StatusCode::NOT_FOUND, "No exception for this entry.").into_response(),
+    })
+}
+
+async fn entry_exceptions_script() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("entry-exceptions.js"),
+    )
+}
+
+pub struct KindsView {
+    pub period: Period,
+    pub anchor: NaiveDate,
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    pub filter: Filter,
+    pub new_only: bool,
+    pub groups: Vec<db::GroupRow>,
+    pub prev_counts: HashMap<i64, i64>,
+}
+
+fn build_kinds(conn: &Connection, q: DashQuery) -> Result<KindsView> {
+    let w = window(conn, &q)?;
+    let new_only = q.new == Some(1);
+    let groups = db::kind_groups(conn, w.start, w.end, &w.filter, new_only, KINDS_LIMIT)?;
+    let ids: Vec<i64> = groups.iter().map(|g| g.id).collect();
+    let prev_counts = db::group_counts(conn, &ids, w.pstart, w.pend)?;
+    Ok(KindsView {
+        period: w.period,
+        anchor: w.anchor,
+        start: w.start,
+        end: w.end,
+        filter: w.filter,
+        new_only,
+        groups,
+        prev_counts,
+    })
+}
+
+async fn kinds_page(
+    Extension(st): Extension<AppState>,
+    Query(q): Query<DashQuery>,
+) -> Result<Response, AppError> {
+    let view = with_db(&st, move |c| build_kinds(c, q)).await?;
+    Ok(pages::kinds(&view).into_response())
 }
 
 // ---------- group detail & suggestions ----------
