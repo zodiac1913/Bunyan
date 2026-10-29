@@ -301,8 +301,10 @@ fn keychain_entry(context: &str, username: &str) -> Result<tests::TestEntry> {
 
 async fn saved_password(context: String, username: String) -> Result<String> {
     tokio::task::spawn_blocking(move || {
+        #[cfg(all(windows, not(test)))]
+        crate::windows_auth::reauthenticate()?;
         keychain_entry(&context, &username)?.get_password().context(
-            "Saved password could not be read. Enter it manually or unlock your OS keychain.",
+            "Saved password could not be read. Enter it manually or check that your OS credential store is available.",
         )
     })
     .await?
@@ -320,7 +322,7 @@ async fn save_preference(st: &AppState, form: &LoginForm, old: Preference) -> Re
     let context = credential_context(st)?;
     let username = form.username.clone();
     let password = (form.remember == Remember::Password).then(|| form.password.clone());
-    // OS keychain calls may prompt or block. Never run them on an async executor thread.
+    // OS credential-store calls may block. Never run them on an async executor thread.
     tokio::task::spawn_blocking(move || -> Result<()> {
         if old.saved_password && (password.is_none() || old.username != username) {
             match keychain_entry(&context, &old.username)?.delete_credential() {
@@ -333,7 +335,7 @@ async fn save_preference(st: &AppState, form: &LoginForm, old: Preference) -> Re
         if let Some(password) = password {
             keychain_entry(&context, &username)?
                 .set_password(&password)
-                .context("Could not save the password in the OS keychain")?;
+                .context("Could not save the password in the OS credential store")?;
         }
         Ok(())
     })
@@ -467,9 +469,9 @@ async fn finish_password_change(
         };
         if save_preference(st, &login, old).await.is_err() {
             tracing::warn!("SQL password changed, but updating the saved password failed");
-            message.push_str(" The OS keychain could not be updated; its old password may remain. Enter the new password manually and save it again.");
+            message.push_str(" The OS credential store could not be updated; its old password may remain. Enter the new password manually and save it again.");
         } else {
-            message.push_str(" Your saved OS-keychain password was updated.");
+            message.push_str(" Your saved OS credential-store password was updated.");
         }
     }
     let mut response =
@@ -522,7 +524,7 @@ pub(super) async fn login(
     let Ok(_guard) = auth.login_lock.try_lock() else {
         return Ok((StatusCode::CONFLICT, render_login(
             &Preference::default(),
-            Some("A sign-in is already in progress. Finish or cancel the OS Keychain prompt before trying again."),
+            Some("A sign-in is already in progress. Finish or cancel the OS credential-store request before trying again."),
             setup_required,
         )).into_response());
     };
@@ -737,7 +739,7 @@ fn render_login(pref: &Preference, error: Option<&str>, setup_required: bool) ->
             section.login-panel.panel {
                 h1 { "Welcome to Bunyan" }
                 p { "Sign in with your SQL Server account to view this workstation's log dashboard." }
-                p.small.muted { "A macOS Keychain popup asks for your Mac login/keychain password, not your SQL Server password. Choose Always Allow only if you trust this Bunyan executable. Rebuilding the development app may cause macOS to ask again." }
+                p.small.muted { (credential_store_notice()) }
                 @if let Some(error) = error { div.flash role="alert" { (error) } }
                 form method="post" action="/login" aria-label="SQL Server sign in" {
                     @if setup_required {
@@ -754,7 +756,7 @@ fn render_login(pref: &Preference, error: Option<&str>, setup_required: bool) ->
                     select id="remember" name="remember" {
                         option value="nothing" selected[pref.username.is_empty()] { "Don't save either" }
                         option value="username" selected[!pref.username.is_empty() && !pref.saved_password] { "Save username only" }
-                        option value="password" selected[pref.saved_password] { "Save username and password (OS keychain)" }
+                        option value="password" selected[pref.saved_password] { "Save username and password (OS credential store)" }
                     }
                     div.login-actions {
                         sml-reactive-button.bunyan-reactive type="submit" name="action" value="password" aria-label="Sign in" title="Sign in" data-icon="bi bi-box-arrow-in-right" data-text="Sign in" {}
@@ -776,6 +778,16 @@ fn render_login(pref: &Preference, error: Option<&str>, setup_required: bool) ->
             }
         },
     )
+}
+
+fn credential_store_notice() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Saved passwords are stored in macOS Keychain. Its authorization popup uses your Mac login/keychain password, not your SQL Server password. Choose Always Allow only if you trust this Bunyan executable; rebuilding the development app may cause macOS to ask again."
+    } else if cfg!(windows) {
+        "Saved passwords are stored in Windows Credential Manager. Sign in with saved password first verifies your Windows account using the system credential dialog, such as your PIV card or Windows password."
+    } else {
+        "Saved passwords are stored in your desktop's OS credential store, not in Bunyan's SQLite database or cookies. On Linux, an available and unlocked Secret Service is required. They are used only when you choose Sign in with saved password."
+    }
 }
 
 #[cfg(test)]
@@ -2012,6 +2024,10 @@ mod tests {
             markup
                 .contains("name=\"password\" type=\"password\" autocomplete=\"current-password\"")
         );
+        if cfg!(windows) {
+            assert!(markup.contains("Windows Credential Manager"));
+            assert!(!markup.contains("macOS Keychain"));
+        }
         assert!(!markup.contains("href=\"/settings\""));
     }
 

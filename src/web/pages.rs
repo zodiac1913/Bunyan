@@ -305,16 +305,50 @@ pub fn entries(v: &EntriesView) -> Markup {
         .severity
         .map(|s| format!(", severity {s}"))
         .unwrap_or_default();
+    let level_summary = if v.available_types.is_empty() {
+        "no levels available".to_string()
+    } else if v.selected_types.len() == v.available_types.len() {
+        "all levels".to_string()
+    } else if v.selected_types.is_empty() {
+        "no levels selected".to_string()
+    } else {
+        format!("levels: {}", v.selected_types.join(", "))
+    };
     let body = html! {
         p { a href=(v.dashboard_url()) { "← Dashboard" } }
         h1 { "Log entries — " (v.period.label(v.anchor)) }
         p.small.muted {
-            (level_label(&v.filter.level)) (sev) ", " (v.filter.app.as_deref().unwrap_or("all apps")) ". "
+            (level_summary) (sev) ", " (v.filter.app.as_deref().unwrap_or("all apps")) ". "
             @if v.total == 0 { "No entries." } @else {
                 "Showing " (fmt_num(first + 1)) "–" (fmt_num(last)) " of " (fmt_num(v.total)) ", newest first."
             }
         }
         div.panel {
+            form.level-filter method="get" action="/entries" {
+                input type="hidden" name="period" value=(v.period.as_str());
+                input type="hidden" name="date" value=(v.anchor);
+                input type="hidden" name="app" value=(v.filter.app.as_deref().unwrap_or(""));
+                input type="hidden" name="level" value=(v.filter.level);
+                @if let Some(severity) = v.severity {
+                    input type="hidden" name="severity" value=(severity);
+                }
+                input type="hidden" name="level_type" value="";
+                fieldset {
+                    legend { "Level types" }
+                    div.level-filter-options {
+                        @for (index, level) in v.available_types.iter().enumerate() {
+                            label.level-filter-option for=(format!("entry-level-{index}")) {
+                                input type="checkbox" id=(format!("entry-level-{index}")) name="level_type" value=(level)
+                                    checked[v.selected_types.contains(level)];
+                                (level)
+                            }
+                        }
+                        @if v.available_types.is_empty() {
+                            p.small.muted { "No level types in this range." }
+                        }
+                    }
+                }
+            }
             @if v.entries.is_empty() {
                 p.muted { "Nothing logged for this filter and range." }
             } @else {
@@ -323,7 +357,7 @@ pub fn entries(v: &EntriesView) -> Markup {
                     thead { tr {
                         th scope="col" { "LogIdentifier" } th scope="col" { "Time" } th scope="col" { "Level" } th.num scope="col" { "Sev" }
                         th scope="col" { "Server" } th scope="col" { "Controller" } th scope="col" { "Action" }
-                        th scope="col" { "Task" } th scope="col" { "User" } th scope="col" { "Message" } th scope="col" { "Exception" }
+                        th scope="col" { "App" } th scope="col" { "User" } th scope="col" { "Message" } th scope="col" { "Exception" }
                     } }
                     tbody {
                         @for e in &v.entries {
@@ -343,19 +377,18 @@ pub fn entries(v: &EntriesView) -> Markup {
                                     button.exception-btn type="button" disabled[!has_exception]
                                         data-exception-url=[has_exception.then(|| format!("/entries/{}/exception", e.log_identifier))]
                                         data-log-identifier=(e.log_identifier)
-                                        aria-label=(format!("Show exception for log entry {}", e.log_identifier)) { "Exception" }
+                                        title="Click to see exception" aria-label="Click to see exception" { "!" }
                                 }
                             }
                         }
                     }
                 }
                 dialog id="exception-dialog" aria-labelledby="exception-title" {
-                    h2 id="exception-title" { "Exception" }
+                    h2 id="exception-title" { "Log entry details" }
                     p.small.muted id="exception-meta" {}
-                    pre id="exception-text" {}
+                    dl id="exception-fields" {}
                     form method="dialog" { button type="submit" { "Close" } }
                 }
-                script src="/assets/entry-exceptions.js" defer {}
                 div.toolbar {
                     div.nav {
                         @if v.page > 0 { a href=(v.page_url(v.page - 1)) { "◀ Newer" } }
@@ -364,6 +397,7 @@ pub fn entries(v: &EntriesView) -> Markup {
                 }
             }
         }
+        script src="/assets/entry-exceptions.js" defer {}
     };
     layout("Log entries", "dash", None, body)
 }
@@ -444,7 +478,7 @@ pub fn group(v: &GroupView) -> Markup {
         div.panel {
             h2 { "Recent occurrences" }
             table {
-                thead { tr { th { "LogIdentifier" } th { "Time" } th.num { "Sev" } th { "Server" } th { "Controller" } th { "Action" } th { "Task" } th { "User" } th { "Message" } } }
+                thead { tr { th { "LogIdentifier" } th { "Time" } th.num { "Sev" } th { "Server" } th { "Controller" } th { "Action" } th { "App" } th { "User" } th { "Message" } } }
                 tbody {
                     @for e in &v.entries {
                         tr {

@@ -19,7 +19,7 @@ use axum::extract::{Form, Path, Query};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Extension, Router, middleware};
+use axum::{Extension, Json, Router, middleware};
 use chrono::{Duration, NaiveDate};
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -274,6 +274,8 @@ mod browser_tests {
     fn exception_button_is_enabled_only_for_long_exceptions() {
         let conn = db::open(std::path::Path::new(":memory:")).unwrap();
         let mut view = build_entries(&conn, DashQuery::default()).unwrap();
+        view.available_types = vec!["Error".into(), "Information".into()];
+        view.selected_types = view.available_types.clone();
         for (id, len) in [(1, 21), (2, 20), (3, 0)] {
             view.entries.push(db::RangeEntry {
                 log_identifier: id,
@@ -291,7 +293,19 @@ mod browser_tests {
             });
         }
         let html = pages::entries(&view).into_string();
+        assert_eq!(html.matches("checked").count(), 2);
+        assert!(
+            view.page_url(1)
+                .contains("&level_type=&level_type=Error&level_type=Information")
+        );
+        assert!(html.contains("scope=\"col\">App</th>"));
+        assert!(!html.contains("scope=\"col\">Task</th>"));
         assert!(html.contains("data-exception-url=\"/entries/1/exception\""));
+        assert!(html.contains("id=\"exception-fields\""));
+        assert!(html.contains("Log entry details"));
+        assert!(html.contains(
+            "title=\"Click to see exception\" aria-label=\"Click to see exception\">!</button>"
+        ));
         assert_eq!(html.matches("type=\"button\" disabled").count(), 2);
         assert!(!html.contains("/entries/2/exception"));
         assert!(html.contains("<dialog id=\"exception-dialog\""));
@@ -580,6 +594,8 @@ pub struct DashQuery {
     date: Option<String>,
     app: Option<String>,
     level: Option<String>,
+    #[serde(rename = "level_type")]
+    level_types: Option<Vec<String>>,
     // List-page only: exact severity, new kinds only (1), zero-based entries page.
     severity: Option<i64>,
     new: Option<u8>,
@@ -878,6 +894,8 @@ pub struct EntriesView {
     pub anchor: NaiveDate,
     pub filter: Filter,
     pub severity: Option<i64>,
+    pub available_types: Vec<String>,
+    pub selected_types: Vec<String>,
     pub entries: Vec<db::RangeEntry>,
     pub total: i64,
     pub page: i64,
@@ -896,6 +914,10 @@ impl EntriesView {
         );
         if let Some(s) = self.severity {
             u += &format!("&severity={s}");
+        }
+        u += "&level_type=";
+        for level in &self.selected_types {
+            u += &format!("&level_type={}", enc(level));
         }
         u + &format!("&page={page}")
     }
@@ -920,11 +942,19 @@ impl EntriesView {
 fn build_entries(conn: &Connection, q: DashQuery) -> Result<EntriesView> {
     let w = window(conn, &q)?;
     let page = q.page.unwrap_or(0).max(0);
-    let (entries, total) = db::entries_in_range(
+    let available_types = db::entry_types_in_range(conn, w.start, w.end, &w.filter)?;
+    let requested_types = q.level_types.unwrap_or_else(|| available_types.clone());
+    let selected_types = available_types
+        .iter()
+        .filter(|level| requested_types.iter().any(|requested| requested == *level))
+        .cloned()
+        .collect::<Vec<_>>();
+    let (entries, total) = db::entries_in_types(
         conn,
         w.start,
         w.end,
         &w.filter,
+        &selected_types,
         q.severity,
         ENTRIES_PER_PAGE,
         page * ENTRIES_PER_PAGE,
@@ -934,6 +964,8 @@ fn build_entries(conn: &Connection, q: DashQuery) -> Result<EntriesView> {
         anchor: w.anchor,
         filter: w.filter,
         severity: q.severity,
+        available_types,
+        selected_types,
         entries,
         total,
         page,
@@ -948,15 +980,15 @@ async fn entries_page(
     Ok(pages::entries(&view).into_response())
 }
 
-/// Exceptions can be large, so the entries page loads one only when its button is clicked.
+/// Full log details are loaded only when the user opens the entry dialog.
 async fn entry_exception(
     Extension(st): Extension<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let text = with_db(&st, move |c| db::entry_exception(c, id)).await?;
-    Ok(match text.filter(|t| !t.trim().is_empty()) {
-        Some(t) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], t).into_response(),
-        None => (StatusCode::NOT_FOUND, "No exception for this entry.").into_response(),
+    let details = with_db(&st, move |c| db::entry_details(c, id)).await?;
+    Ok(match details {
+        Some(details) => Json(details).into_response(),
+        None => (StatusCode::NOT_FOUND, "No log entry found.").into_response(),
     })
 }
 

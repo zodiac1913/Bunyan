@@ -5,6 +5,7 @@ use crate::normalize::{self, GroupKey};
 use anyhow::Result;
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -685,7 +686,30 @@ pub struct RangeEntry {
     pub exception_len: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct EntryDetails {
+    pub log_identifier: i64,
+    pub log_app: String,
+    pub log_type: String,
+    pub log_severity: i64,
+    pub message: String,
+    pub exception: Option<String>,
+    pub task_definition_identifier: Option<i64>,
+    pub task_definition_title: Option<String>,
+    pub project_identifier: Option<i64>,
+    pub project_name: Option<String>,
+    pub customer_service_identifier: Option<i64>,
+    pub class_name: Option<String>,
+    pub method_name: Option<String>,
+    pub add_user_account: Option<String>,
+    pub server: Option<String>,
+    pub add_user_identifier: Option<i64>,
+    pub add_user_name: Option<String>,
+    pub add_timestamp: String,
+}
+
 /// One page of entries in `[start, end)` (newest first) plus the total matching count.
+#[cfg(test)]
 pub fn entries_in_range(
     conn: &Connection,
     start: NaiveDate,
@@ -695,8 +719,72 @@ pub fn entries_in_range(
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<RangeEntry>, i64)> {
+    entries_in_range_with_types(conn, start, end, f, None, severity, limit, offset)
+}
+
+/// Distinct level types available for this range and app, regardless of level selection.
+pub fn entry_types_in_range(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+    f: &Filter,
+) -> Result<Vec<String>> {
+    let mut params = range_params(start, end);
+    let sql = format!(
+        "SELECT DISTINCT {} FROM log_entries e WHERE e.day >= ?1 AND e.day < ?2 {}
+         ORDER BY 1 COLLATE NOCASE",
+        level_sql("e.log_type", "e.message"),
+        f.sql(&mut params, false)
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(params), |row| row.get(0))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Entries in a range filtered to a selected set of exact level types.
+pub fn entries_in_types(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+    f: &Filter,
+    types: &[String],
+    severity: Option<i64>,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<RangeEntry>, i64)> {
+    entries_in_range_with_types(conn, start, end, f, Some(types), severity, limit, offset)
+}
+
+fn entries_in_range_with_types(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+    f: &Filter,
+    types: Option<&[String]>,
+    severity: Option<i64>,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<RangeEntry>, i64)> {
     let mut p = range_params(start, end);
-    let mut filter = f.sql(&mut p, true);
+    let mut filter = f.sql(&mut p, types.is_none());
+    if let Some(types) = types {
+        if types.is_empty() {
+            filter += " AND 0";
+        } else {
+            let placeholders = types
+                .iter()
+                .map(|level| {
+                    p.push(canonical_level(level).to_string());
+                    format!("?{}", p.len())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            filter += &format!(
+                " AND {} IN ({placeholders})",
+                level_sql("e.log_type", "e.message")
+            );
+        }
+    }
     if let Some(n) = severity {
         filter += &format!(" AND e.log_severity = {n}");
     }
@@ -733,15 +821,39 @@ pub fn entries_in_range(
     Ok((rows.collect::<Result<_, _>>()?, total))
 }
 
-pub fn entry_exception(conn: &Connection, log_identifier: i64) -> Result<Option<String>> {
+pub fn entry_details(conn: &Connection, log_identifier: i64) -> Result<Option<EntryDetails>> {
     Ok(conn
         .query_row(
-            "SELECT exception FROM log_entries WHERE log_identifier = ?1",
+            "SELECT log_identifier, log_app, log_type, log_severity, message, exception,
+                    task_definition_identifier, task_definition_title, project_identifier,
+                    project_name, customer_service_identifier, class_name, method_name,
+                    add_user_account, server, add_user_identifier, add_user_name, add_timestamp
+             FROM log_entries WHERE log_identifier = ?1",
             [log_identifier],
-            |r| r.get(0),
+            |r| {
+                Ok(EntryDetails {
+                    log_identifier: r.get(0)?,
+                    log_app: r.get(1)?,
+                    log_type: canonical_level(&r.get::<_, String>(2)?).to_string(),
+                    log_severity: r.get(3)?,
+                    message: r.get(4)?,
+                    exception: r.get(5)?,
+                    task_definition_identifier: r.get(6)?,
+                    task_definition_title: r.get(7)?,
+                    project_identifier: r.get(8)?,
+                    project_name: r.get(9)?,
+                    customer_service_identifier: r.get(10)?,
+                    class_name: r.get(11)?,
+                    method_name: r.get(12)?,
+                    add_user_account: r.get(13)?,
+                    server: r.get(14)?,
+                    add_user_identifier: r.get(15)?,
+                    add_user_name: r.get(16)?,
+                    add_timestamp: r.get(17)?,
+                })
+            },
         )
-        .optional()?
-        .flatten())
+        .optional()?)
 }
 
 pub fn group_entries(conn: &Connection, id: i64, limit: i64) -> Result<Vec<EntryRow>> {
@@ -831,6 +943,78 @@ mod tests {
     }
 
     #[test]
+    fn entry_details_returns_all_source_fields() {
+        let mut connection = open(std::path::Path::new(":memory:")).unwrap();
+        let mut source_entry = row(9, "Full failure", "2026-10-13 08:00:00");
+        source_entry.log_app = "WebHost".into();
+        source_entry.task_definition_identifier = Some(12);
+        source_entry.task_definition_title = Some("Orders API".into());
+        source_entry.project_identifier = Some(34);
+        source_entry.project_name = Some("Orders".into());
+        source_entry.customer_service_identifier = Some(56);
+        source_entry.add_user_account = Some("DOMAIN\\user".into());
+        source_entry.add_user_identifier = Some(78);
+        source_entry.add_user_name = Some("Example User".into());
+        ingest(&mut connection, &[source_entry]).unwrap();
+
+        let details = entry_details(&connection, 9).unwrap().unwrap();
+        let json = serde_json::to_value(details).unwrap();
+        assert_eq!(json["log_identifier"], 9);
+        assert_eq!(json["log_app"], "WebHost");
+        assert_eq!(json["log_type"], "Error");
+        assert_eq!(json["log_severity"], 3);
+        assert_eq!(json["message"], "Full failure");
+        assert_eq!(json["exception"], "System.TimeoutException: boom");
+        assert_eq!(json["task_definition_identifier"], 12);
+        assert_eq!(json["task_definition_title"], "Orders API");
+        assert_eq!(json["project_identifier"], 34);
+        assert_eq!(json["project_name"], "Orders");
+        assert_eq!(json["customer_service_identifier"], 56);
+        assert_eq!(json["class_name"], "OrderService");
+        assert_eq!(json["method_name"], "Save");
+        assert_eq!(json["add_user_account"], "DOMAIN\\user");
+        assert_eq!(json["server"], "APP01");
+        assert_eq!(json["add_user_identifier"], 78);
+        assert_eq!(json["add_user_name"], "Example User");
+        assert_eq!(json["add_timestamp"], "2026-10-13 08:00:00.000");
+    }
+
+    #[test]
+    fn entries_can_be_filtered_by_multiple_exact_types() {
+        let mut connection = open(std::path::Path::new(":memory:")).unwrap();
+        let error = row(1, "Failure", "2026-10-13 08:00:00");
+        let mut information = row(2, "Started", "2026-10-13 09:00:00");
+        information.log_type = "Information".into();
+        let mut warning = row(3, "Slow", "2026-10-13 10:00:00");
+        warning.log_type = "Warning".into();
+        ingest(&mut connection, &[error, information, warning]).unwrap();
+
+        let start = "2026-10-13".parse().unwrap();
+        let end = "2026-10-14".parse().unwrap();
+        let filter = Filter {
+            app: None,
+            level: "all".into(),
+        };
+        let types = entry_types_in_range(&connection, start, end, &filter).unwrap();
+        assert_eq!(types, ["Error", "Information", "Warning"]);
+        let selected = vec!["Error".into(), "Warning".into()];
+        let (entries, total) =
+            entries_in_types(&connection, start, end, &filter, &selected, None, 10, 0).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.log_identifier)
+                .collect::<Vec<_>>(),
+            [3, 1]
+        );
+        let (entries, total) =
+            entries_in_types(&connection, start, end, &filter, &[], None, 10, 0).unwrap();
+        assert_eq!(total, 0);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
     fn entry_lists_match_dashboard_counts_for_each_level_scope_and_severity() {
         let mut c = open(std::path::Path::new(":memory:")).unwrap();
         let mut critical = row(3, "Meltdown", "2026-10-13 09:00:00");
@@ -873,8 +1057,10 @@ mod tests {
                 .exception_len
         };
         assert_eq!(len(1), "System.TimeoutException: boom".len() as i64);
-        assert!(entry_exception(&c, 1).unwrap().unwrap().contains("boom"));
-        assert_eq!(entry_exception(&c, 404).unwrap(), None);
+        let detail = entry_details(&c, 1).unwrap().unwrap();
+        assert_eq!(detail.message, "Boom");
+        assert!(detail.exception.unwrap().contains("boom"));
+        assert!(entry_details(&c, 404).unwrap().is_none());
         let (page, total) = entries_in_range(&c, start, end, &f, None, 2, 2).unwrap();
         assert_eq!((page.len(), total), (1, 3));
 

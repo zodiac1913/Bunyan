@@ -23,6 +23,12 @@ main { padding:20px 24px; max-width:1400px; margin:0 auto; }
 h1 { font-size:22px; margin:4px 0 12px; } h2 { font-size:16px; margin:0 0 10px; }
 a { color:var(--accent); }
 .toolbar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:16px; }
+.level-filter { margin-bottom:14px; }
+.level-filter fieldset { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; border:1px solid var(--line); padding:10px 12px; }
+.level-filter legend { padding:0 6px; font-weight:600; }
+.level-filter-options { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; flex:1 1 400px; }
+.level-filter-option { display:inline-flex; gap:5px; align-items:center; white-space:nowrap; }
+.level-filter-option input { margin:0; }
 .tabs a { padding:6px 14px; border:1px solid var(--line); background:#fff; text-decoration:none; color:var(--ink); }
 .tabs a:first-child { border-radius:6px 0 0 6px; } .tabs a:last-child { border-radius:0 6px 6px 0; }
 .tabs a.active { background:var(--accent); color:#fff; border-color:var(--accent); }
@@ -37,8 +43,10 @@ button { background:var(--accent); color:#fff; border-color:var(--accent); curso
 .bunyan-reactive[disabled] { cursor:not-allowed; }
 .exception-btn { padding:2px 10px; font-size:12px; cursor:pointer; }
 .exception-btn:disabled { cursor:not-allowed; opacity:.5; }
-#exception-dialog { width:min(900px, 92vw); max-height:85vh; border:1px solid var(--line); border-radius:10px; padding:16px; }
-#exception-dialog pre { max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+#exception-dialog { width:90vw; max-width:90vw; max-height:90vh; overflow:auto; border:1px solid var(--line); border-radius:10px; padding:16px; }
+#exception-fields { display:grid; grid-template-columns:minmax(10rem, 0.3fr) minmax(0, 1fr); gap:8px 16px; }
+#exception-fields dt { color:var(--muted); font-weight:600; }
+#exception-fields dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
 .count-link { color:inherit; text-decoration:underline dotted; }
 .count-link:hover, .count-link:focus-visible { text-decoration:underline; }
 .chart a:hover text.linked { text-decoration:underline; fill:var(--ink); }

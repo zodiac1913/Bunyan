@@ -17,6 +17,8 @@ mod scheduler;
 mod source;
 mod source_code;
 mod web;
+#[cfg(all(windows, not(test)))]
+mod windows_auth;
 
 use anyhow::{Result, bail};
 use chrono::{Duration, NaiveDate};

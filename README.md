@@ -219,13 +219,17 @@ removes the previously remembered password when appropriate. A changed SQL passw
 entered manually and saved to replace the old one. Use **Sign in with saved password** explicitly;
 remembering a password does not automatically sign in or embed it in HTML.
 
-A macOS Keychain authorization popup uses your **Mac login/keychain password**, not your SQL
+On macOS, a Keychain authorization popup uses your **Mac login/keychain password**, not your SQL
 Server password. Choose **Always Allow** only for a Bunyan executable you trust; rebuilding the
-development executable may cause macOS to request authorization again. Saved-password sign-in
-reads the entry once and does not rewrite it. Duplicate sign-in submissions are rejected while
-an OS prompt is pending. If saving a remember choice fails after SQL authentication succeeds,
-Bunyan signs you in and displays a warning rather than forcing another login attempt. Previous
-saved settings may remain after a storage failure.
+development executable may cause macOS to request authorization again. On Windows, saved passwords
+use **Windows Credential Manager**. Saved-password sign-in first opens Windows' system
+credential dialog and verifies the current Windows account through its available providers (such as
+a PIV card or account password) before reading the SQL password. The provider response is verified
+by Windows and is not unpacked by Bunyan. Saved-password sign-in reads the entry once and does not
+rewrite it. Duplicate sign-in submissions are rejected while an OS credential-store request is
+pending. If saving a remember choice fails after SQL authentication succeeds, Bunyan signs you in
+and displays a warning rather than forcing another login attempt. Previous saved settings may
+remain after a storage failure.
 
 Sessions last 12 hours, end on app restart, and are revoked by **Sign out**.
 Sign out uses a JavaScript same-origin POST, without an HTML form; failures remain

@@ -63,14 +63,14 @@ pub const FIELDS: &[Field] = &[
     },
     Field {
         key: "task_id",
-        label: "Task ID",
+        label: "App ID",
         default_column: "TaskDefinitionIdentifier",
         sql_type: "bigint",
         required: false,
     },
     Field {
         key: "task",
-        label: "Task title",
+        label: "App",
         default_column: "TaskDefinitionTitle",
         sql_type: "nvarchar(max)",
         required: false,
